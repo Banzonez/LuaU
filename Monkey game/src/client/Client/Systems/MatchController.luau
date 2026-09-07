@@ -20,9 +20,7 @@ if not UIScale then
 end
 
 local textInfo = TweenInfo.new(0.1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
-local textPopUpIntervale = 0.002
 
-local scaleTween = TweenService:Create(UIScale, textInfo, { Scale = 1.2 })
 local centralScaleTween = TweenService:Create(UIScale, textInfo, { Scale = 1.5 })
 local rotateTween = TweenService:Create(MainText, textInfo, { Rotation = MainText.Rotation + 10 })
 
@@ -46,17 +44,7 @@ matchController.init = function()
 		local text = texts[phase]
 		if text then
 			local concatenedText = text .. tostring(seconds)
-               local processText = ""
-               
-			task.spawn(function()
-				for i = 1, string.len(concatenedText) do
-					local newChar = string.sub(concatenedText, i, i)
-					processText = processText .. newChar
-
-					MainText.Text = processText
-					task.wait(textPopUpIntervale)
-				end
-			end)
+			MainText.Text = concatenedText
 
 			if phase == "MatchStarting" then
                     if not MainFrame:GetAttribute("OldPos") then
@@ -65,6 +53,7 @@ matchController.init = function()
 
 				MainFrame.Position = UDim2.fromScale(0.5, 0.5)
 				centralScaleTween:Play()
+				rotateTween:Play()
 			else
 				local oldPos = MainFrame:GetAttribute("OldPos")
 				if oldPos then
@@ -72,10 +61,7 @@ matchController.init = function()
 				end
 
 				MainFrame:SetAttribute("OldPos", nil)
-				scaleTween:Play()
 			end
-
-			rotateTween:Play()
 		end
 	end)
 end
