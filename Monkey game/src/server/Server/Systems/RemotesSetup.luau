@@ -1,37 +1,43 @@
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+--!strict
 
-local Shared = ReplicatedStorage:WaitForChild("Shared")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local RemotesConfig = require(script.Parent.Parent.Configs.RemotesConfig)
 
-local remotes = {}
+local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
+assert(sharedFolder, "ReplicatedStorage.Shared is missing.")
 
-local function load(table, instanceName, parent)
-     for _, name in pairs(table) do
-          if parent:FindFirstChild(name) then continue end
-          local event = Instance.new(instanceName)
-          event.Name = name
-          event.Parent = parent
-     end
-end     
+local RemotesSetup = {}
 
-remotes.init = function()
-     local Events = Shared:FindFirstChild("Events")
-     if not Events then
-          Events = Instance.new("Folder")
-          Events.Name = "Events"
-          Events.Parent = Shared
-     end    
+local function load(names: { string }, className: string, parent: Instance)
+	for _, name in ipairs(names) do
+		if parent:FindFirstChild(name) then
+			continue
+		end
 
-     local Functions = Shared:FindFirstChild("Functions")
-     if not Functions then
-          Functions = Instance.new("Folder")
-          Functions.Name = "Functions"
-          Functions.Parent = Shared
-     end    
-
-     load(RemotesConfig.Events, "RemoteEvent", Events)
-     load(RemotesConfig.Functions, "RemoteFunction", Functions)
+		local remote = Instance.new(className)
+		remote.Name = name
+		remote.Parent = parent
+	end
 end
 
-return remotes
+function RemotesSetup.init()
+	local events = sharedFolder:FindFirstChild("Events")
+	if not events then
+		events = Instance.new("Folder")
+		events.Name = "Events"
+		events.Parent = sharedFolder
+	end
+
+	local functions = sharedFolder:FindFirstChild("Functions")
+	if not functions then
+		functions = Instance.new("Folder")
+		functions.Name = "Functions"
+		functions.Parent = sharedFolder
+	end
+
+	load(RemotesConfig.Events, "RemoteEvent", events)
+	load(RemotesConfig.Functions, "RemoteFunction", functions)
+end
+
+return RemotesSetup

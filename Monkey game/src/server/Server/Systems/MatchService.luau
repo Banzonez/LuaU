@@ -3,9 +3,30 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
+local SoundService = game:GetService("SoundService")
 local Workspace = game:GetService("Workspace")
 
-local MatchService = {}
+local BananasSpawner = require(script.Parent.Parent.Utils.BananasSpawner)
+
+local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
+assert(sharedFolder, "ReplicatedStorage.Shared is missing.")
+local eventsFolder = sharedFolder:FindFirstChild("Events")
+assert(eventsFolder, "ReplicatedStorage.Shared.Events is missing.")
+local matchEvent = eventsFolder:FindFirstChild("MatchEvent")
+assert(matchEvent and matchEvent:IsA("RemoteEvent"), "ReplicatedStorage.Shared.Events.MatchEvent must be a RemoteEvent")
+
+local assetsFolder = ServerStorage:FindFirstChild("Assets")
+assert(assetsFolder, "ServerStorage.Assets is missing.")
+local mapsFolder = assetsFolder:FindFirstChild("Maps")
+assert(mapsFolder, "ServerStorage.Assets.Maps is missing.")
+
+local intermissionModel = Workspace:FindFirstChild("Lobby")
+assert(intermissionModel and intermissionModel:IsA("Model"), "Workspace.Lobby must be a Model")
+
+local soundsFolder = ServerStorage:FindFirstChild("Sounds")
+assert(soundsFolder, "ServerStorage.Sounds is missing.")
+local victorySound = soundsFolder:FindFirstChild("Victory sound (at the end of round)")
+assert(victorySound and victorySound:IsA("Sound"), "The match victory sound is missing from ServerStorage.Sounds.")
 
 local INTERMISSION_DURATION = 5 -- 30
 local MATCH_DURATION = 5 * 2 -- 60
@@ -14,26 +35,18 @@ local RESPAWN_IN_MATCH = true -- Set to false to leave match respawning to your 
 local CHARACTER_ASSURANCE = 0.1
 local MAP_CFRAME = CFrame.new(Vector3.new(50, 300, 0))
 
-local sharedFolder = ReplicatedStorage:WaitForChild("Shared")
-local eventsFolder = sharedFolder:WaitForChild("Events")
-local matchEvent = eventsFolder:WaitForChild("MatchEvent")
-assert(matchEvent:IsA("RemoteEvent"), "ReplicatedStorage.Shared.Events.MatchEvent must be a RemoteEvent")
-
-local mapsFolder = ServerStorage:WaitForChild("Assets"):WaitForChild("Maps")
-local intermissionModel = Workspace:WaitForChild("Lobby")
-assert(intermissionModel:IsA("Model"), "Workspace.Lobby must be a Model")
-
 local activeMap: Model?
 local started = false
 local phase = "Intermission"
 local participatingPlayers: { [Player]: boolean } = {}
+local MatchService = {}
 
 local function getSpawnCFrame(model: Model): CFrame
 	local spawns = model:FindFirstChild("Spawns")
 	if spawns then
 		local validSpawns = {}
 
-		for _, descendant in spawns:GetDescendants() do
+		for _, descendant in ipairs(spawns:GetDescendants()) do
 			if descendant:IsA("BasePart") then
 				table.insert(validSpawns, descendant)
 			end
@@ -155,7 +168,7 @@ end
 
 local function chooseMap(): Model
 	local maps = {}
-	for _, instance in pairs(mapsFolder:GetChildren()) do
+	for _, instance in ipairs(mapsFolder:GetChildren()) do
 		if instance:IsA("Model") then
 			table.insert(maps, instance)
 		end
@@ -186,7 +199,7 @@ local function runMatch()
 	phase = "MatchStarting"
 	local playersForMatch = Players:GetPlayers()
 	table.clear(participatingPlayers)
-	for _, player in playersForMatch do
+	for _, player in ipairs(playersForMatch) do
 		participatingPlayers[player] = true
 	end
 
@@ -199,6 +212,8 @@ local function runMatch()
 		end
 	end
 
+	task.spawn(BananasSpawner.spawnBananasInMap, selectedMap)
+
 	phase = "Match"
 	for seconds = MATCH_DURATION, 0, -1 do
 		sendCountdown("Match", seconds, selectedMap)
@@ -206,6 +221,13 @@ local function runMatch()
 			task.wait(1)
 		end
 	end
+
+	local clone = victorySound:Clone()
+	clone.Parent = SoundService
+	clone:Play()
+	clone.Ended:Connect(function()
+		clone:Destroy()
+	end)
 
 	destroyActiveMap()
 	phase = "Intermission"
@@ -218,7 +240,7 @@ function MatchService.init()
 	end
 	started = true
 
-	for _, player in Players:GetPlayers() do
+	for _, player in ipairs(Players:GetPlayers()) do
 		connectPlayer(player)
 	end
 	Players.PlayerAdded:Connect(connectPlayer)

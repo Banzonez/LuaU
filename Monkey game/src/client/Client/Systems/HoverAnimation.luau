@@ -83,7 +83,7 @@ local function setupButton(button)
 end
 
 function module.init()
-	for _, gui in pairs(PlayerGui:GetDescendants()) do
+	for _, gui in ipairs(PlayerGui:GetDescendants()) do
 		setupButton(gui)
 	end
 
