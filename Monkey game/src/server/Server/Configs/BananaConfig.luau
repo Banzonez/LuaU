@@ -2,8 +2,6 @@ local BananaConfig = {
 	Chances = {
 		Banana = 45,
 		GoldBanana = 25,
-		SmallBananaCrate = 15,
-		BananaCrate = 5,
 	},
 
 	TagsNames = {
@@ -14,6 +12,8 @@ local BananaConfig = {
 	},
 
 	MAX_BANANAS_SPAWNED = 50,
+	MAX_CRATES = 4,
+	MAX_SMALL_CRATES = 6,
 	SPAWN_RATE = 1,
 }
 

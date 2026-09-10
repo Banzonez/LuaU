@@ -6,6 +6,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ServerStorage = game:GetService("ServerStorage")
 local SoundService = game:GetService("SoundService")
+local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local BananaConfig = require(script.Parent.Parent.Configs.BananaConfig)
@@ -17,32 +18,28 @@ assert(bananaCollectSounds, "ServerStorage.Sounds.BananaCollect is missing.")
 
 local BANANA_TAG = "SpawnedBanana"
 local SMALL_CRATE_TAG = assert(BananaConfig.getName(3), "Small crate tag is missing from BananaConfig.")
-local PARACHUTE_ROTATION_SPEED = math.rad(10)
+local COLLECTABLE_ATTRIBUTE = "BananasCollectable"
+local MATCH_BANANAS_FOLDER = "MatchBananas"
 local SPATIAL_CHECK_INTERVAL = 0.1
 local GROUND_CHECK_DISTANCE = 1
 local MINIMUM_GROUND_NORMAL_Y = 0.7
 
+local bananaTweenInfo = TweenInfo.new(.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out)
 type BananaState = {
-	rootPart: BasePart?,
+	rootPart: BasePart,
+	map: Model,
+	points: number,
 	falling: boolean,
-	collected: boolean,
-	points: number?,
-	rayParams: RaycastParams?,
+	raycastParams: RaycastParams?,
 	overlapParams: OverlapParams,
 }
 
 local RNG = Random.new()
 local collectionSounds: { Sound } = {}
 local bananaStates: { [Model]: BananaState } = {}
-local initialized = false
 local spatialCheckAccumulator = 0
-local handler = {}
-
-for _, instance in ipairs(bananaCollectSounds:GetChildren()) do
-	if instance:IsA("Sound") then
-		table.insert(collectionSounds, instance)
-	end
-end
+local initialized = false
+local Handler = {}
 
 local function getPlayerFromPart(part: BasePart): Player?
 	local ancestor: Instance? = part
@@ -55,7 +52,6 @@ local function getPlayerFromPart(part: BasePart): Player?
 				return player
 			end
 		end
-
 		ancestor = ancestor.Parent
 	end
 
@@ -73,38 +69,64 @@ local function playCollectionSound()
 	Debris:AddItem(sound, math.max(sound.TimeLength + 1, 5))
 end
 
+local function tweenModelScale(model: Model, targetScale: number, tweenInfo: TweenInfo): Tween
+	targetScale = targetScale <= 0 and 0.001 or targetScale
+
+	local scaleValue = Instance.new("NumberValue")
+	scaleValue.Value = model:GetScale()
+
+	local connection = scaleValue:GetPropertyChangedSignal("Value"):Connect(function()
+		if model.Parent then
+			model:ScaleTo(scaleValue.Value)
+		end
+	end)
+
+	local tween = TweenService:Create(scaleValue, tweenInfo, {
+		Value = targetScale,
+	})
+
+	tween.Completed:Once(function()
+		connection:Disconnect()
+
+		if model.Parent then
+			model:ScaleTo(targetScale)
+		end
+
+		scaleValue:Destroy()
+	end)
+
+	tween:Play()
+	return tween
+end
+
 local function collectBanana(banana: Model, state: BananaState, player: Player)
-	if state.collected then
+	local matchBananas = player:FindFirstChild(MATCH_BANANAS_FOLDER)
+	if not matchBananas or not matchBananas:IsA("Folder") or banana:GetAttribute("Collectable") == false then
 		return
 	end
+	banana:SetAttribute("Collectable", false)
 
-	local points = state.points
-	if not points then
-		return
-	end
+	local collectedBanana = Instance.new("StringValue")
+	collectedBanana.Name = banana.Name
+	collectedBanana.Value = tostring(state.points)
+	collectedBanana.Parent = matchBananas
 
-	state.collected = true
-	CollectionService:RemoveTag(banana, BANANA_TAG)
-
-	local bananasAttribute = player:GetAttribute("Bananas")
-	local currentBananas = if typeof(bananasAttribute) == "number" then bananasAttribute else 0
-
-	player:SetAttribute("Bananas", currentBananas + points)
 	playCollectionSound()
+
+	local bananaTween = tweenModelScale(banana, 0, bananaTweenInfo)
+	bananaTween.Completed:Wait()
+
+	CollectionService:RemoveTag(banana, BANANA_TAG)
 	banana:Destroy()
 end
 
 local function checkForCharacter(banana: Model, state: BananaState)
-	if state.collected or not state.points or not banana.Parent then
+	if state.map:GetAttribute(COLLECTABLE_ATTRIBUTE) ~= true then
 		return
 	end
 
 	local boundingCFrame, boundingSize = banana:GetBoundingBox()
-	local touchingParts = Workspace:GetPartBoundsInBox(
-		boundingCFrame,
-		boundingSize,
-		state.overlapParams
-	)
+	local touchingParts = Workspace:GetPartBoundsInBox(boundingCFrame, boundingSize, state.overlapParams)
 
 	for _, part in ipairs(touchingParts) do
 		local player = getPlayerFromPart(part)
@@ -116,74 +138,43 @@ local function checkForCharacter(banana: Model, state: BananaState)
 end
 
 local function stopCrateFall(banana: Model, state: BananaState, groundPosition: Vector3)
-	local rootPart = state.rootPart
-	if not rootPart then
-		return
-	end
-
 	state.falling = false
 	banana:SetAttribute("ReachedGround", true)
 
-	local parachuteVelocity = rootPart:FindFirstChild("ParachuteVelocity")
-	if parachuteVelocity then
-		parachuteVelocity:Destroy()
-	end
-
-	local parachuteAttachment = rootPart:FindFirstChild("ParachuteAttachment")
-	if parachuteAttachment then
-		parachuteAttachment:Destroy()
-	end
-
-	rootPart.AssemblyLinearVelocity = Vector3.zero
-	rootPart.AssemblyAngularVelocity = Vector3.zero
-
-	local boundingCFrame, boundingSize = banana:GetBoundingBox()
-	local groundedY = groundPosition.Y + boundingSize.Y / 2
-	banana:PivotTo(
-		banana:GetPivot() + Vector3.new(0, groundedY - boundingCFrame.Position.Y, 0)
-	)
-
-	for _, descendant in ipairs(banana:GetDescendants()) do
-		if descendant:IsA("BasePart") then
-			descendant.Anchored = false
-			descendant.CanCollide = false
+	for _, name in ipairs({
+		"ParachuteAlignment",
+		"ParachuteRotation",
+		"ParachuteVelocity",
+		"ParachuteAttachment",
+	}) do
+		local instance = state.rootPart:FindFirstChild(name)
+		if instance then
+			instance:Destroy()
 		end
 	end
 
-	rootPart.Anchored = true
+	state.rootPart.AssemblyLinearVelocity = Vector3.zero
+	state.rootPart.AssemblyAngularVelocity = Vector3.zero
+
+	local boundingCFrame, boundingSize = banana:GetBoundingBox()
+	local groundedY = groundPosition.Y + boundingSize.Y / 2
+	banana:PivotTo(banana:GetPivot() + Vector3.new(0, groundedY - boundingCFrame.Position.Y, 0))
+
+	state.rootPart.Anchored = true
 end
 
 local function checkCrateGround(banana: Model, state: BananaState)
-	local rootPart = state.rootPart
-	local rayParams = state.rayParams
-	if not state.falling or not rootPart or not rootPart.Parent or not rayParams then
-		return
-	end
-
-	if rootPart.AssemblyLinearVelocity.Y > 0 then
+	local raycastParams = state.raycastParams
+	if not state.falling or not raycastParams then
 		return
 	end
 
 	local boundingCFrame, boundingSize = banana:GetBoundingBox()
-	local fallDistancePerCheck = math.max(-rootPart.AssemblyLinearVelocity.Y, 0)
-		* SPATIAL_CHECK_INTERVAL
-	local rayLength = boundingSize.Y / 2 + GROUND_CHECK_DISTANCE + fallDistancePerCheck
-	local result = Workspace:Raycast(
-		boundingCFrame.Position,
-		Vector3.new(0, -rayLength, 0),
-		rayParams
-	)
+	local traveledDistance = math.max(-state.rootPart.AssemblyLinearVelocity.Y, 0) * SPATIAL_CHECK_INTERVAL
+	local rayLength = boundingSize.Y / 2 + GROUND_CHECK_DISTANCE + traveledDistance
+	local result = Workspace:Raycast(boundingCFrame.Position, Vector3.new(0, -rayLength, 0), raycastParams)
 
-	if not result or result.Normal.Y < MINIMUM_GROUND_NORMAL_Y then
-		return
-	end
-
-	if getPlayerFromPart(result.Instance) then
-		return
-	end
-
-	local hitModel = result.Instance:FindFirstAncestorOfClass("Model")
-	if hitModel and CollectionService:HasTag(hitModel, BANANA_TAG) then
+	if not result or result.Normal.Y < MINIMUM_GROUND_NORMAL_Y or getPlayerFromPart(result.Instance) then
 		return
 	end
 
@@ -191,94 +182,77 @@ local function checkCrateGround(banana: Model, state: BananaState)
 end
 
 local function trackBanana(instance: Instance)
-	if not instance:IsA("Model") or bananaStates[instance] then
+	if not instance:IsA("Model") then
 		return
 	end
 
-	local rootPart = instance.PrimaryPart
-	if not rootPart then
-		local candidate = instance:FindFirstChildWhichIsA("BasePart", true)
-		if candidate and candidate:IsA("BasePart") then
-			rootPart = candidate
-		end
-	end
-	local isSmallCrate = CollectionService:HasTag(instance, SMALL_CRATE_TAG)
+	local rootPart = instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart", true)
+	local map = instance:FindFirstAncestorOfClass("Model")
 	local pointsAttribute = instance:GetAttribute("Points")
-	local points = if typeof(pointsAttribute) == "number" then pointsAttribute else nil
-
-	if not points then
-		warn(`{instance:GetFullName()} needs a numeric Points attribute.`)
+	if not rootPart or not map or typeof(pointsAttribute) ~= "number" then
+		warn(`{instance:GetFullName()} needs a map, BasePart, and numeric Points attribute.`)
+		return
 	end
 
-	local rayParams: RaycastParams = nil
-	if isSmallCrate then
-		rayParams = RaycastParams.new()
-		rayParams.FilterType = Enum.RaycastFilterType.Exclude
-		rayParams.FilterDescendantsInstances = { instance }
-		rayParams.IgnoreWater = true
-		rayParams.RespectCanCollide = true
+	local isFalling = CollectionService:HasTag(instance, SMALL_CRATE_TAG)
+		and instance:GetAttribute("ReachedGround") ~= true
+	local raycastParams: RaycastParams? = nil
+	if isFalling then
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = { instance }
+		params.IgnoreWater = true
+		params.RespectCanCollide = true
+		raycastParams = params
 	end
 
 	local overlapParams = OverlapParams.new()
 	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
 	overlapParams.FilterDescendantsInstances = { instance }
 
-	local state: BananaState = {
+	bananaStates[instance] = {
 		rootPart = rootPart,
-		falling = isSmallCrate and instance:GetAttribute("ReachedGround") ~= true,
-		collected = false,
-		points = points,
-		rayParams = rayParams,
+		map = map,
+		points = pointsAttribute,
+		falling = isFalling,
+		raycastParams = raycastParams,
 		overlapParams = overlapParams,
 	}
-
-	bananaStates[instance] = state
-
-	if state.falling then
-		if rootPart then
-			rootPart.AssemblyAngularVelocity = Vector3.new(0, PARACHUTE_ROTATION_SPEED, 0)
-		else
-			warn(`Falling crate {instance:GetFullName()} does not contain a BasePart.`)
-			state.falling = false
-		end
-	end
-end
-
-local function untrackBanana(instance: Instance)
-	if instance:IsA("Model") then
-		bananaStates[instance] = nil
-	end
 end
 
 local function updateBananas(deltaTime: number)
 	spatialCheckAccumulator += deltaTime
-	local shouldCheckSpace = spatialCheckAccumulator >= SPATIAL_CHECK_INTERVAL
-
-	if shouldCheckSpace then
-		spatialCheckAccumulator %= SPATIAL_CHECK_INTERVAL
+	if spatialCheckAccumulator < SPATIAL_CHECK_INTERVAL then
+		return
 	end
+	spatialCheckAccumulator %= SPATIAL_CHECK_INTERVAL
 
 	for banana, state in pairs(bananaStates) do
 		if not banana.Parent then
 			bananaStates[banana] = nil
-			continue
-		end
-
-		if shouldCheckSpace then
+		else
 			checkCrateGround(banana, state)
 			checkForCharacter(banana, state)
 		end
 	end
 end
 
-function handler.init()
+function Handler.init()
 	if initialized then
 		return
 	end
 	initialized = true
 
+	for _, instance in ipairs(bananaCollectSounds:GetChildren()) do
+		if instance:IsA("Sound") then
+			table.insert(collectionSounds, instance)
+		end
+	end
+
 	CollectionService:GetInstanceAddedSignal(BANANA_TAG):Connect(trackBanana)
-	CollectionService:GetInstanceRemovedSignal(BANANA_TAG):Connect(untrackBanana)
+	CollectionService:GetInstanceRemovedSignal(BANANA_TAG):Connect(function(instance)
+		bananaStates[instance :: Model] = nil
+	end)
 
 	for _, instance in ipairs(CollectionService:GetTagged(BANANA_TAG)) do
 		trackBanana(instance)
@@ -287,4 +261,4 @@ function handler.init()
 	RunService.Heartbeat:Connect(updateBananas)
 end
 
-return handler
+return Handler

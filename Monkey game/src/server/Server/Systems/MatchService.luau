@@ -3,7 +3,6 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
-local SoundService = game:GetService("SoundService")
 local Workspace = game:GetService("Workspace")
 
 local BananasSpawner = require(script.Parent.Parent.Utils.BananasSpawner)
@@ -19,26 +18,31 @@ local assetsFolder = ServerStorage:FindFirstChild("Assets")
 assert(assetsFolder, "ServerStorage.Assets is missing.")
 local mapsFolder = assetsFolder:FindFirstChild("Maps")
 assert(mapsFolder, "ServerStorage.Assets.Maps is missing.")
+local crownTemplate = assetsFolder:FindFirstChild("Crown")
+assert(crownTemplate and crownTemplate:IsA("Accessory"), "ServerStorage.Assets.Crown must be an Accessory.")
+local crownHandle = crownTemplate:FindFirstChild("Handle")
+assert(crownHandle and crownHandle:IsA("BasePart"), "ServerStorage.Assets.Crown needs a BasePart named Handle.")
 
 local intermissionModel = Workspace:FindFirstChild("Lobby")
 assert(intermissionModel and intermissionModel:IsA("Model"), "Workspace.Lobby must be a Model")
 
-local soundsFolder = ServerStorage:FindFirstChild("Sounds")
-assert(soundsFolder, "ServerStorage.Sounds is missing.")
-local victorySound = soundsFolder:FindFirstChild("Victory sound (at the end of round)")
-assert(victorySound and victorySound:IsA("Sound"), "The match victory sound is missing from ServerStorage.Sounds.")
-
 local INTERMISSION_DURATION = 5 -- 30
-local MATCH_DURATION = 5 * 2 -- 60
+local MATCH_DURATION = 1 * 60
 local MATCH_START_COUNTDOWN = 3
 local RESPAWN_IN_MATCH = true -- Set to false to leave match respawning to your game.
 local CHARACTER_ASSURANCE = 0.1
 local MAP_CFRAME = CFrame.new(Vector3.new(50, 300, 0))
+local BANANAS_COLLECTABLE_ATTRIBUTE = "BananasCollectable"
+local MATCH_START_TIME_ATTRIBUTE = "BananasMatchStartedAt"
+local MATCH_BANANAS_FOLDER = "MatchBananas"
+local LEADER_CROWN_NAME = "MatchLeaderCrown"
+local LEADER_HIGHLIGHT_NAME = "MatchLeaderHighlight"
 
 local activeMap: Model?
 local started = false
 local phase = "Intermission"
 local participatingPlayers: { [Player]: boolean } = {}
+local matchLeader: Player?
 local MatchService = {}
 
 local function getSpawnCFrame(model: Model): CFrame
@@ -106,6 +110,148 @@ local function movePlayersToModel(playersToMove: { Player }, model: Model)
 	end
 end
 
+local function prepareMatchBananas(player: Player)
+	local oldFolder = player:FindFirstChild(MATCH_BANANAS_FOLDER)
+	if oldFolder then
+		oldFolder:Destroy()
+	end
+
+	local matchBananas = Instance.new("Folder")
+	matchBananas.Name = MATCH_BANANAS_FOLDER
+	matchBananas.Parent = player
+end
+
+local function getMatchBananaPoints(player: Player): number
+	local matchBananas = player:FindFirstChild(MATCH_BANANAS_FOLDER)
+	if not matchBananas then
+		return 0
+	end
+
+	local points = 0
+	for _, entry in ipairs(matchBananas:GetChildren()) do
+		points += tonumber((entry :: StringValue).Value) or 0
+	end
+
+	return points
+end
+
+local function settleMatchBananas(player: Player)
+	local matchBananas = player:FindFirstChild(MATCH_BANANAS_FOLDER)
+	if not matchBananas then
+		return
+	end
+
+	local bananasAttribute = player:GetAttribute("Bananas")
+	local currentBananas = if typeof(bananasAttribute) == "number" then bananasAttribute else 0
+	player:SetAttribute("Bananas", currentBananas + getMatchBananaPoints(player))
+	matchBananas:Destroy()
+end
+
+local function removeLeaderVisuals(player: Player)
+	local character = player.Character
+	if not character then
+		return
+	end
+
+	for _, name in ipairs({ LEADER_CROWN_NAME, LEADER_HIGHLIGHT_NAME }) do
+		local visual = character:FindFirstChild(name)
+		if visual then
+			visual:Destroy()
+		end
+	end
+end
+
+local function addLeaderVisuals(player: Player)
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not character or not humanoid then
+		return
+	end
+
+	removeLeaderVisuals(player)
+	local hatAttachment = character:FindFirstChild("HatAttachment", true)
+	if
+		hatAttachment
+		and hatAttachment:IsA("Attachment")
+		and not (hatAttachment.Parent and hatAttachment.Parent:IsA("BasePart"))
+	then
+		for _, descendant in ipairs(character:GetDescendants()) do
+			if descendant:IsA("Motor6D") and descendant.Name == "Head" and descendant.Part1 then
+				hatAttachment.Parent = descendant.Part1
+				break
+			end
+		end
+	end
+
+	local crown = crownTemplate:Clone()
+	crown.Name = LEADER_CROWN_NAME
+	local handle = crown:FindFirstChild("Handle") :: BasePart
+	for _, descendant in ipairs(crown:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant.Anchored = false
+			descendant.CanCollide = false
+			descendant.Massless = true
+
+			if descendant ~= handle then
+				local weld = Instance.new("WeldConstraint")
+				weld.Name = "CrownWeld"
+				weld.Part0 = handle
+				weld.Part1 = descendant
+				weld.Parent = handle
+			end
+		end
+	end
+
+	humanoid:AddAccessory(crown)
+
+	local highlight = Instance.new("Highlight")
+	highlight.Name = LEADER_HIGHLIGHT_NAME
+	highlight.Adornee = character
+	highlight.FillColor = Color3.fromRGB(255, 221, 0)
+	highlight.FillTransparency = 0.45
+	highlight.OutlineColor = Color3.fromRGB(255, 255, 0)
+	highlight.OutlineTransparency = 0
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.Parent = character
+end
+
+local function setMatchLeader(player: Player?)
+	if player == matchLeader then
+		return
+	end
+
+	if matchLeader then
+		removeLeaderVisuals(matchLeader)
+	end
+
+	matchLeader = player
+	if player then
+		addLeaderVisuals(player)
+	end
+end
+
+local function updateMatchLeader()
+	local leader = matchLeader
+	local highestPoints = 0
+	if leader and participatingPlayers[leader] and leader.Parent == Players then
+		highestPoints = getMatchBananaPoints(leader)
+	else
+		leader = nil
+	end
+
+	for player in pairs(participatingPlayers) do
+		if player.Parent == Players then
+			local points = getMatchBananaPoints(player)
+			if points > highestPoints then
+				leader = player
+				highestPoints = points
+			end
+		end
+	end
+
+	setMatchLeader(if highestPoints > 0 then leader else nil)
+end
+
 local function shouldRespawnInMatch(player: Player): boolean
 	return RESPAWN_IN_MATCH
 		and (phase == "MatchStarting" or phase == "Match")
@@ -130,14 +276,14 @@ local function connectCharacter(player: Player, character: Model)
 		end)
 	end
 
-	local destination = if phase == "Intermission"
-			or not participatingPlayers[player]
-			or not shouldRespawnInMatch(player)
-		then intermissionModel
-		else activeMap
+	local destination = if shouldRespawnInMatch(player) then activeMap else intermissionModel
 
 	if destination then
 		task.defer(moveCharacterToModel, player, destination)
+	end
+
+	if player == matchLeader then
+		task.defer(addLeaderVisuals, player)
 	end
 end
 
@@ -184,6 +330,7 @@ end
 
 local function runIntermission()
 	phase = "Intermission"
+	setMatchLeader(nil)
 	table.clear(participatingPlayers)
 	movePlayersToModel(Players:GetPlayers(), intermissionModel)
 
@@ -194,17 +341,31 @@ local function runIntermission()
 end
 
 local function runMatch()
-	destroyActiveMap()
-	local selectedMap = chooseMap()
-	phase = "MatchStarting"
 	local playersForMatch = Players:GetPlayers()
+	if #playersForMatch <= 0 then
+		setMatchLeader(nil)
+		destroyActiveMap()
+		phase = "Intermission"
+		table.clear(participatingPlayers)
+
+		return
+	end
+
+	destroyActiveMap()
+	setMatchLeader(nil)
+	local selectedMap = chooseMap()
+	selectedMap:SetAttribute(BANANAS_COLLECTABLE_ATTRIBUTE, false)
+	phase = "MatchStarting"
 	table.clear(participatingPlayers)
 	for _, player in ipairs(playersForMatch) do
 		participatingPlayers[player] = true
+		prepareMatchBananas(player)
 	end
 
 	-- Configure match characters here
 	movePlayersToModel(playersForMatch, selectedMap)
+	task.spawn(BananasSpawner.spawnBananasInMap, selectedMap, MATCH_DURATION)
+
 	for seconds = MATCH_START_COUNTDOWN, 0, -1 do
 		sendCountdown("MatchStarting", seconds, selectedMap)
 		if seconds > 0 then
@@ -212,23 +373,24 @@ local function runMatch()
 		end
 	end
 
-	task.spawn(BananasSpawner.spawnBananasInMap, selectedMap)
-
 	phase = "Match"
+	selectedMap:SetAttribute(BANANAS_COLLECTABLE_ATTRIBUTE, true)
+	selectedMap:SetAttribute(MATCH_START_TIME_ATTRIBUTE, Workspace:GetServerTimeNow())
 	for seconds = MATCH_DURATION, 0, -1 do
+		updateMatchLeader()
 		sendCountdown("Match", seconds, selectedMap)
 		if seconds > 0 then
 			task.wait(1)
 		end
 	end
 
-	local clone = victorySound:Clone()
-	clone.Parent = SoundService
-	clone:Play()
-	clone.Ended:Connect(function()
-		clone:Destroy()
-	end)
-
+	selectedMap:SetAttribute(BANANAS_COLLECTABLE_ATTRIBUTE, false)
+	setMatchLeader(nil)
+	for _, player in ipairs(playersForMatch) do
+		if player.Parent == Players then
+			settleMatchBananas(player)
+		end
+	end
 	destroyActiveMap()
 	phase = "Intermission"
 	table.clear(participatingPlayers)
@@ -244,6 +406,19 @@ function MatchService.init()
 		connectPlayer(player)
 	end
 	Players.PlayerAdded:Connect(connectPlayer)
+	Players.PlayerRemoving:Connect(function(player)
+		if participatingPlayers[player] then
+			settleMatchBananas(player)
+			participatingPlayers[player] = nil
+		end
+
+		if player == matchLeader then
+			setMatchLeader(nil)
+			if phase == "Match" then
+				updateMatchLeader()
+			end
+		end
+	end)
 
 	task.spawn(function()
 		while true do
