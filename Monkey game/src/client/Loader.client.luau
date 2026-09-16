@@ -1,10 +1,12 @@
-local Client = script.Parent.Client
+--!strict
 
-for _, script in ipairs(Client:GetDescendants()) do
-	if script:IsA("ModuleScript") then
-		local mdl = require(script)
-		if mdl.init then
-			mdl.init()
+local client = script.Parent.Client
+
+for _, descendant in ipairs(client:GetDescendants()) do
+	if descendant:IsA("ModuleScript") then
+		local module = require(descendant)
+		if module.init then
+			module.init()
 		end
 	end
 end

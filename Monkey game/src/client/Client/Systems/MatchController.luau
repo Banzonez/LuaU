@@ -1,30 +1,36 @@
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
+--!strict
 
-local Shared = ReplicatedStorage:WaitForChild("Shared")
-local MatchEvent: RemoteEvent = Shared:WaitForChild("Events"):WaitForChild("MatchEvent")
+local replicatedStorage = game:GetService("ReplicatedStorage")
+local players = game:GetService("Players")
+local tweenService = game:GetService("TweenService")
 
-local Player = Players.LocalPlayer
-local PlayerGui = Player:WaitForChild("PlayerGui")
-local MatchGui: ScreenGui? = PlayerGui:WaitForChild("MatchGui")
-assert(MatchGui, "MatchGui doesn't exist.")
+local shared = replicatedStorage:WaitForChild("Shared")
+local matchEvent: RemoteEvent = shared:WaitForChild("Events"):WaitForChild("MatchEvent")
 
-local MainFrame = MatchGui:WaitForChild("MainFrame")
-local MainText: TextLabel = MainFrame.TextLabel
-local UIScale = MainFrame:FindFirstChildOfClass("UIScale")
-if not UIScale then
-	UIScale = Instance.new("UIScale")
-	UIScale.Scale = 1
-	UIScale.Parent = MainFrame
+type MatchEventData = {
+	phase: string?,
+	seconds: number?,
+	map: Model?,
+}
+
+local player = players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local matchGui = playerGui:WaitForChild("MatchGui") :: ScreenGui
+
+local mainFrame = matchGui:WaitForChild("MainFrame") :: Frame
+local mainText = mainFrame:WaitForChild("TextLabel") :: TextLabel
+local uiScale: UIScale = mainFrame:FindFirstChildOfClass("UIScale") or Instance.new("UIScale")
+if uiScale.Parent == nil then
+	uiScale.Scale = 1
+	uiScale.Parent = mainFrame
 end
 
 local textInfo = TweenInfo.new(0.1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 0, true)
 
-local centralScaleTween = TweenService:Create(UIScale, textInfo, { Scale = 1.5 })
-local rotateTween = TweenService:Create(MainText, textInfo, { Rotation = MainText.Rotation + 10 })
+local centralScaleTween = tweenService:Create(uiScale, textInfo, { Scale = 1.5 })
+local rotateTween = tweenService:Create(mainText, textInfo, { Rotation = mainText.Rotation + 10 })
 
-local texts = {
+local texts: { [string]: string } = {
 	Intermission = "Collecting bananas in: ",
 	MatchStarting = "",
 	Match = "Seconds to end: ",
@@ -32,35 +38,49 @@ local texts = {
 
 local matchController = {}
 
-matchController.init = function()
-	MatchGui.Enabled = true
+local function formatCountdown(totalSeconds: number): string
+	totalSeconds = math.max(math.floor(totalSeconds), 0)
 
-	MatchEvent.OnClientEvent:Connect(function(data)
-		-- map can be used for specific visual for each map, or other things
+	local hours = math.floor(totalSeconds / 3600)
+	local minutes = math.floor((totalSeconds % 3600) / 60)
+	local seconds = totalSeconds % 60
+
+	if hours > 0 then
+		return string.format("%d:%02d:%02d", hours, minutes, seconds)
+	end
+
+	return string.format("%02d:%02d", minutes, seconds)
+end
+
+matchController.init = function()
+	matchGui.Enabled = true
+
+	matchEvent.OnClientEvent:Connect(function(data: MatchEventData)
 		local phase = data.phase
 		local seconds = data.seconds
 		local _map = data.map
 
-		local text = texts[phase]
-		if text then
-			local concatenedText = text .. tostring(seconds)
-			MainText.Text = concatenedText
+		local text = phase and texts[phase]
+		if text and seconds then
+			local countdown = if phase == "MatchStarting" then tostring(seconds) else formatCountdown(seconds)
+			local concatenedText = text .. countdown
+			mainText.Text = concatenedText
 
 			if phase == "MatchStarting" then
-                    if not MainFrame:GetAttribute("OldPos") then
-				     MainFrame:SetAttribute("OldPos", MainFrame.Position)
-                    end
+				if not mainFrame:GetAttribute("OldPos") then
+					mainFrame:SetAttribute("OldPos", mainFrame.Position)
+				end
 
-				MainFrame.Position = UDim2.fromScale(0.5, 0.5)
+				mainFrame.Position = UDim2.fromScale(0.5, 0.5)
 				centralScaleTween:Play()
 				rotateTween:Play()
 			else
-				local oldPos = MainFrame:GetAttribute("OldPos")
-				if oldPos then
-					MainFrame.Position = oldPos
+				local oldPos = mainFrame:GetAttribute("OldPos")
+				if typeof(oldPos) == "UDim2" then
+					mainFrame.Position = oldPos
 				end
 
-				MainFrame:SetAttribute("OldPos", nil)
+				mainFrame:SetAttribute("OldPos", nil)
 			end
 		end
 	end)

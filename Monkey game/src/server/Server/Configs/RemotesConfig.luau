@@ -1,6 +1,9 @@
+--!strict
+
 return {
      Events = {
-          "MatchEvent"
+          "MatchEvent",
+          "InputEvent"
      },
 
      Functions = {

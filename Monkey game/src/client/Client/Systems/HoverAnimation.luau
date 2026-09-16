@@ -1,10 +1,10 @@
-local module = {}
+--!strict
 
-local TweenService = game:GetService("TweenService")
-local Players = game:GetService("Players")
+local tweenService = game:GetService("TweenService")
+local players = game:GetService("Players")
 
-local player = Players.LocalPlayer
-local PlayerGui = player:WaitForChild("PlayerGui")
+local player = players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 
 local tweenInfo = TweenInfo.new(
 	0.25,
@@ -12,16 +12,16 @@ local tweenInfo = TweenInfo.new(
 	Enum.EasingDirection.Out
 )
 
-local sizeOffset = 15
+local SIZE_OFFSET = 15
 
-local activeTweens = {}
+local activeTweens: { [GuiButton]: Tween } = {}
 
 local hoverSound = Instance.new("Sound")
 hoverSound.Looped = false
 hoverSound.SoundId = "rbxassetid://107511012621133"
 hoverSound.Parent = script
 
-local function stopTween(gui)
+local function stopTween(gui: GuiButton)
 	local tween = activeTweens[gui]
 
 	if tween then
@@ -30,10 +30,10 @@ local function stopTween(gui)
 	end
 end
 
-local function animate(gui, targetSize)
+local function animate(gui: GuiButton, targetSize: UDim2)
 	stopTween(gui)
 
-	local tween = TweenService:Create(gui, tweenInfo, {
+	local tween = tweenService:Create(gui, tweenInfo, {
 		Size = targetSize
 	})
 
@@ -49,7 +49,7 @@ local function animate(gui, targetSize)
 	tween:Play()
 end
 
-local function setupButton(button)
+local function setupButton(button: Instance)
 	if not button:IsA("GuiButton") then
 		return
 	end
@@ -61,16 +61,12 @@ local function setupButton(button)
 	button:SetAttribute("HoverSetup", true)
 
 	local normalSize = button.Size
-	local hoverSize = normalSize + UDim2.fromOffset(sizeOffset, sizeOffset)
-	
-	local bindableEvent = Instance.new("BindableEvent")
-	bindableEvent.Parent = button
-	bindableEvent.Name = "HoverEvent"
-	
-	bindableEvent.Event:Connect(function(...) 
+	local hoverSize = normalSize + UDim2.fromOffset(SIZE_OFFSET, SIZE_OFFSET)
+
+	local function resetButton()
 		animate(button, normalSize)
 		button:SetAttribute("Hovered", false)
-	end)
+	end
 	
 	button.MouseEnter:Connect(function()
 		button:SetAttribute("Hovered", true)
@@ -78,16 +74,18 @@ local function setupButton(button)
 	end)
 
 	button.MouseLeave:Connect(function()
-		bindableEvent:Fire()
+		resetButton()
 	end)
 end
 
-function module.init()
-	for _, gui in ipairs(PlayerGui:GetDescendants()) do
+local hoverAnimation = {}
+
+function hoverAnimation.init()
+	for _, gui in ipairs(playerGui:GetDescendants()) do
 		setupButton(gui)
 	end
 
-	PlayerGui.DescendantAdded:Connect(setupButton)
+	playerGui.DescendantAdded:Connect(setupButton)
 end
 
-return module
+return hoverAnimation

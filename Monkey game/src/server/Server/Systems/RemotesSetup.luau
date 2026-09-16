@@ -1,13 +1,13 @@
 --!strict
 
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local replicatedStorage = game:GetService("ReplicatedStorage")
 
-local RemotesConfig = require(script.Parent.Parent.Configs.RemotesConfig)
+local remotesConfig = require(script.Parent.Parent.Configs.RemotesConfig)
 
-local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
+local sharedFolder = replicatedStorage:FindFirstChild("Shared")
 assert(sharedFolder, "ReplicatedStorage.Shared is missing.")
 
-local RemotesSetup = {}
+local remotesSetup = {}
 
 local function load(names: { string }, className: string, parent: Instance)
 	for _, name in ipairs(names) do
@@ -21,7 +21,7 @@ local function load(names: { string }, className: string, parent: Instance)
 	end
 end
 
-function RemotesSetup.init()
+function remotesSetup.init()
 	local events = sharedFolder:FindFirstChild("Events")
 	if not events then
 		events = Instance.new("Folder")
@@ -36,8 +36,8 @@ function RemotesSetup.init()
 		functions.Parent = sharedFolder
 	end
 
-	load(RemotesConfig.Events, "RemoteEvent", events)
-	load(RemotesConfig.Functions, "RemoteFunction", functions)
+	load(remotesConfig.Events, "RemoteEvent", events)
+	load(remotesConfig.Functions, "RemoteFunction", functions)
 end
 
-return RemotesSetup
+return remotesSetup

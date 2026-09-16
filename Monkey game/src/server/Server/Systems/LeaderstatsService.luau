@@ -1,11 +1,13 @@
-local Players = game:GetService("Players")
+--!strict
 
-local STATS = {
+local players = game:GetService("Players")
+
+local STATS: { [string]: number } = {
 	Bananas = 0,
 }
 
 local initialized = false
-local module = {}
+local leaderstatsService = {}
 
 local function createLeaderstats(player: Player)
 	local folder = Instance.new("Folder")
@@ -34,17 +36,17 @@ local function createLeaderstats(player: Player)
 	folder.Parent = player
 end
 
-function module.init()
+function leaderstatsService.init()
 	if initialized then
 		return
 	end
 	initialized = true
 
-	for _, player in ipairs(Players:GetPlayers()) do
+	for _, player in ipairs(players:GetPlayers()) do
 		createLeaderstats(player)
 	end
 
-	Players.PlayerAdded:Connect(createLeaderstats)
+	players.PlayerAdded:Connect(createLeaderstats)
 end
 
-return module
+return leaderstatsService

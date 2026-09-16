@@ -1,33 +1,24 @@
 --!strict
 
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerStorage = game:GetService("ServerStorage")
-local Workspace = game:GetService("Workspace")
+local players = game:GetService("Players")
+local replicatedStorage = game:GetService("ReplicatedStorage")
+local serverStorage = game:GetService("ServerStorage")
+local workspace = game:GetService("Workspace")
 
-local BananasSpawner = require(script.Parent.Parent.Utils.BananasSpawner)
+local bananasSpawner = require(script.Parent.Parent.Utils.BananasSpawner)
 
-local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
-assert(sharedFolder, "ReplicatedStorage.Shared is missing.")
+local sharedFolder = replicatedStorage:FindFirstChild("Shared")
 local eventsFolder = sharedFolder:FindFirstChild("Events")
-assert(eventsFolder, "ReplicatedStorage.Shared.Events is missing.")
 local matchEvent = eventsFolder:FindFirstChild("MatchEvent")
-assert(matchEvent and matchEvent:IsA("RemoteEvent"), "ReplicatedStorage.Shared.Events.MatchEvent must be a RemoteEvent")
 
-local assetsFolder = ServerStorage:FindFirstChild("Assets")
-assert(assetsFolder, "ServerStorage.Assets is missing.")
+local assetsFolder = serverStorage:FindFirstChild("Assets")
 local mapsFolder = assetsFolder:FindFirstChild("Maps")
-assert(mapsFolder, "ServerStorage.Assets.Maps is missing.")
 local crownTemplate = assetsFolder:FindFirstChild("Crown")
-assert(crownTemplate and crownTemplate:IsA("Accessory"), "ServerStorage.Assets.Crown must be an Accessory.")
-local crownHandle = crownTemplate:FindFirstChild("Handle")
-assert(crownHandle and crownHandle:IsA("BasePart"), "ServerStorage.Assets.Crown needs a BasePart named Handle.")
 
-local intermissionModel = Workspace:FindFirstChild("Lobby")
-assert(intermissionModel and intermissionModel:IsA("Model"), "Workspace.Lobby must be a Model")
+local intermissionModel = workspace:FindFirstChild("Lobby")
 
-local INTERMISSION_DURATION = 5 -- 30
-local MATCH_DURATION = 1 * 60
+local INTERMISSION_DURATION = 10
+local MATCH_DURATION = 5 * 60
 local MATCH_START_COUNTDOWN = 3
 local RESPAWN_IN_MATCH = true -- Set to false to leave match respawning to your game.
 local CHARACTER_ASSURANCE = 0.1
@@ -43,7 +34,7 @@ local started = false
 local phase = "Intermission"
 local participatingPlayers: { [Player]: boolean } = {}
 local matchLeader: Player?
-local MatchService = {}
+local matchService = {}
 
 local function getSpawnCFrame(model: Model): CFrame
 	local spawns = model:FindFirstChild("Spawns")
@@ -104,7 +95,7 @@ end
 
 local function movePlayersToModel(playersToMove: { Player }, model: Model)
 	for _, player in ipairs(playersToMove) do
-		if player.Parent == Players then
+		if player.Parent == players then
 			moveCharacterToModel(player, model)
 		end
 	end
@@ -113,7 +104,13 @@ end
 local function prepareMatchBananas(player: Player)
 	local oldFolder = player:FindFirstChild(MATCH_BANANAS_FOLDER)
 	if oldFolder then
-		oldFolder:Destroy()
+		for _, instance in pairs(oldFolder:GetChildren()) do
+			if instance:IsA("StringValue") then
+				instance:Destroy()
+			end
+		end
+
+		return
 	end
 
 	local matchBananas = Instance.new("Folder")
@@ -144,7 +141,7 @@ local function settleMatchBananas(player: Player)
 	local bananasAttribute = player:GetAttribute("Bananas")
 	local currentBananas = if typeof(bananasAttribute) == "number" then bananasAttribute else 0
 	player:SetAttribute("Bananas", currentBananas + getMatchBananaPoints(player))
-	matchBananas:Destroy()
+	prepareMatchBananas(player)
 end
 
 local function removeLeaderVisuals(player: Player)
@@ -233,14 +230,14 @@ end
 local function updateMatchLeader()
 	local leader = matchLeader
 	local highestPoints = 0
-	if leader and participatingPlayers[leader] and leader.Parent == Players then
+	if leader and participatingPlayers[leader] and leader.Parent == players then
 		highestPoints = getMatchBananaPoints(leader)
 	else
 		leader = nil
 	end
 
 	for player in pairs(participatingPlayers) do
-		if player.Parent == Players then
+		if player.Parent == players then
 			local points = getMatchBananaPoints(player)
 			if points > highestPoints then
 				leader = player
@@ -256,7 +253,7 @@ local function shouldRespawnInMatch(player: Player): boolean
 	return RESPAWN_IN_MATCH
 		and (phase == "MatchStarting" or phase == "Match")
 		and participatingPlayers[player] == true
-		and player.Parent == Players
+		and player.Parent == players
 end
 
 local function respawnPlayer(player: Player)
@@ -323,7 +320,7 @@ local function chooseMap(): Model
 
 	local selectedMap = maps[math.random(1, #maps)]:Clone()
 	selectedMap:PivotTo(MAP_CFRAME)
-	selectedMap.Parent = Workspace
+	selectedMap.Parent = workspace
 	activeMap = selectedMap
 	return selectedMap
 end
@@ -332,16 +329,18 @@ local function runIntermission()
 	phase = "Intermission"
 	setMatchLeader(nil)
 	table.clear(participatingPlayers)
-	movePlayersToModel(Players:GetPlayers(), intermissionModel)
+	movePlayersToModel(players:GetPlayers(), intermissionModel)
 
 	for seconds = INTERMISSION_DURATION, 0, -1 do
 		sendCountdown("Intermission", seconds, nil)
-		task.wait(1)
+		if seconds > 0 then
+			task.wait(1)
+		end
 	end
 end
 
 local function runMatch()
-	local playersForMatch = Players:GetPlayers()
+	local playersForMatch = players:GetPlayers()
 	if #playersForMatch <= 0 then
 		setMatchLeader(nil)
 		destroyActiveMap()
@@ -364,18 +363,16 @@ local function runMatch()
 
 	-- Configure match characters here
 	movePlayersToModel(playersForMatch, selectedMap)
-	task.spawn(BananasSpawner.spawnBananasInMap, selectedMap, MATCH_DURATION)
+	task.spawn(bananasSpawner.spawnBananasInMap, selectedMap, MATCH_DURATION)
 
-	for seconds = MATCH_START_COUNTDOWN, 0, -1 do
+	for seconds = MATCH_START_COUNTDOWN, 1, -1 do
 		sendCountdown("MatchStarting", seconds, selectedMap)
-		if seconds > 0 then
-			task.wait(1)
-		end
+		task.wait(1)
 	end
 
 	phase = "Match"
 	selectedMap:SetAttribute(BANANAS_COLLECTABLE_ATTRIBUTE, true)
-	selectedMap:SetAttribute(MATCH_START_TIME_ATTRIBUTE, Workspace:GetServerTimeNow())
+	selectedMap:SetAttribute(MATCH_START_TIME_ATTRIBUTE, workspace:GetServerTimeNow())
 	for seconds = MATCH_DURATION, 0, -1 do
 		updateMatchLeader()
 		sendCountdown("Match", seconds, selectedMap)
@@ -387,7 +384,7 @@ local function runMatch()
 	selectedMap:SetAttribute(BANANAS_COLLECTABLE_ATTRIBUTE, false)
 	setMatchLeader(nil)
 	for _, player in ipairs(playersForMatch) do
-		if player.Parent == Players then
+		if player.Parent == players then
 			settleMatchBananas(player)
 		end
 	end
@@ -396,17 +393,17 @@ local function runMatch()
 	table.clear(participatingPlayers)
 end
 
-function MatchService.init()
+function matchService.init()
 	if started then
 		return
 	end
 	started = true
 
-	for _, player in ipairs(Players:GetPlayers()) do
+	for _, player in ipairs(players:GetPlayers()) do
 		connectPlayer(player)
 	end
-	Players.PlayerAdded:Connect(connectPlayer)
-	Players.PlayerRemoving:Connect(function(player)
+	players.PlayerAdded:Connect(connectPlayer)
+	players.PlayerRemoving:Connect(function(player)
 		if participatingPlayers[player] then
 			settleMatchBananas(player)
 			participatingPlayers[player] = nil
@@ -428,4 +425,4 @@ function MatchService.init()
 	end)
 end
 
-return MatchService
+return matchService

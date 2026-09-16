@@ -1,43 +1,52 @@
 --!strict
 
-local CollectionService = game:GetService("CollectionService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerStorage = game:GetService("ServerStorage")
-local Workspace = game:GetService("Workspace")
+local collectionService = game:GetService("CollectionService")
+local replicatedStorage = game:GetService("ReplicatedStorage")
+local runService = game:GetService("RunService")
+local serverStorage = game:GetService("ServerStorage")
+local workspace = game:GetService("Workspace")
 
-local BananaConfig = require(script.Parent.Parent.Configs.BananaConfig)
+local bananaConfig = require(script.Parent.Parent.Configs.BananaConfig)
+local bananaModelUtils = require(script.Parent.BananaModelUtils)
 
-local assetsFolder = ServerStorage:FindFirstChild("Assets")
-assert(assetsFolder, "ServerStorage.Assets is missing.")
+local assetsFolder = serverStorage:FindFirstChild("Assets")
 local bananaModelsFolder = assetsFolder:FindFirstChild("BananaModels")
-assert(bananaModelsFolder, "ServerStorage.Assets.BananaModels is missing.")
 local vfxFolder = assetsFolder:FindFirstChild("VFX")
-assert(vfxFolder, "VFX not found in Assets.")
-local sharedFolder = ReplicatedStorage:FindFirstChild("Shared")
-assert(sharedFolder, "ReplicatedStorage.Shared is missing.")
+
+local sharedFolder = replicatedStorage:FindFirstChild("Shared")
 local eventsFolder = sharedFolder:FindFirstChild("Events")
-assert(eventsFolder, "ReplicatedStorage.Shared.Events is missing.")
 local matchEvent = eventsFolder:FindFirstChild("MatchEvent")
-assert(matchEvent and matchEvent:IsA("RemoteEvent"), "ReplicatedStorage.Shared.Events.MatchEvent must be a RemoteEvent.")
 
 local BANANA_TAG = "SpawnedBanana"
-local SMALL_CRATE_TAG = assert(BananaConfig.getName(3), "Small crate tag is missing from BananaConfig.")
-local LARGE_CRATE_TAG = assert(BananaConfig.getName(4), "Large crate tag is missing from BananaConfig.")
+local NORMAL_BANANA_TAG = assert(bananaConfig.getName(1), "Normal banana tag is missing from BananaConfig.")
+local SMALL_CRATE_TAG = assert(bananaConfig.getName(3), "Small crate tag is missing from BananaConfig.")
+local LARGE_CRATE_TAG = assert(bananaConfig.getName(4), "Large crate tag is missing from BananaConfig.")
+local BANANA_TYPE_ATTRIBUTE = "BananaType"
+local DROPPED_BANANA_ATTRIBUTE = "DroppedBanana"
 local MATCH_START_TIME_ATTRIBUTE = "BananasMatchStartedAt"
 local MAX_PLACEMENT_ATTEMPTS = 30
 local RAYCAST_MARGIN = 100
 local GROUND_CLEARANCE = 0.1
-local SINGLE_BANANA_HEIGHT = 1
+local SINGLE_BANANA_HEIGHT = -.5
 local AIRDROP_HEIGHT = 25
 local PARACHUTE_FALL_SPEED = 5
 local PARACHUTE_ROTATION_SPEED = math.rad(5)
 local MINIMUM_GROUND_NORMAL_Y = 0.7
 local MINIMUM_AIRDROP_DISTANCE = 10
-local AIRDROP_VFX: BasePart = vfxFolder:FindFirstChild("AirdropVFX")
+local DROP_LIFETIME = 6
+local DROP_BLINKS = 3
+local DROP_BLINK_INTERVAL = 0.15
+local DROP_COLLECT_DELAY = 0.6
+local DROP_SPAWN_RADIUS = 2
+local DROP_SPAWN_HEIGHT = 1
+local DROP_HORIZONTAL_SPEED = 14
+local DROP_UPWARD_SPEED = 28
+local DROP_SPAWN_BATCH_SIZE = 5
+local AIRDROP_VFX = vfxFolder:FindFirstChild("AirdropVFX")
 
 local CRATE_LIMITS: { [string]: number } = {
-	[SMALL_CRATE_TAG] = BananaConfig.MAX_SMALL_CRATES,
-	[LARGE_CRATE_TAG] = BananaConfig.MAX_CRATES,
+	[SMALL_CRATE_TAG] = bananaConfig.MAX_SMALL_CRATES,
+	[LARGE_CRATE_TAG] = bananaConfig.MAX_CRATES,
 }
 
 type CrateState = {
@@ -56,16 +65,24 @@ type SpawnContext = {
 	airdropPositions: { Vector3 },
 }
 
+type BananaSpawner = {
+	spawnBananasInMap: (map: Model, matchDuration: number) -> (),
+	spawnDroppedBananas: (position: Vector3, amount: number, targetPlayer: Player) -> number,
+	canCollectDroppedBanana: (banana: Model, player: Player) -> boolean,
+}
+
 local RNG = Random.new()
 local bananaTemplates: { [string]: { Model } } = {}
-local Spawner = {}
+local droppedBananaOwners: { [Model]: Player } = setmetatable({}, { __mode = "k" }) :: any
+local activeContext: SpawnContext? = nil
+local bananaSpawner: BananaSpawner = {} :: BananaSpawner
 
 local function cacheTemplates(): { [string]: { Model } }
 	local templatesByName: { [string]: { Model } } = {}
 
-	for _, bananaName in ipairs(BananaConfig.TagsNames) do
+	for _, bananaName in ipairs(bananaConfig.TagsNames) do
 		local templates = {}
-		for _, instance in ipairs(CollectionService:GetTagged(bananaName)) do
+		for _, instance in ipairs(collectionService:GetTagged(bananaName)) do
 			if instance:IsA("Model")
 				and instance.Parent == bananaModelsFolder
 				and instance:FindFirstChildWhichIsA("BasePart", true)
@@ -87,10 +104,22 @@ local function canSpawn(context: SpawnContext, bananaName: string): boolean
 	return not crate or crate.spawned < crate.maximum
 end
 
+local function getSpawnedBananaCount(context: SpawnContext): number
+	local count = 0
+
+	for _, banana in ipairs(context.container:GetChildren()) do
+		if banana:GetAttribute(DROPPED_BANANA_ATTRIBUTE) ~= true then
+			count += 1
+		end
+	end
+
+	return count
+end
+
 local function getRandomBananaName(): string?
 	local totalWeight = 0
 
-	for _, chance in pairs(BananaConfig.Chances) do
+	for _, chance in pairs(bananaConfig.Chances) do
 		if chance > 0 then
 			totalWeight += chance
 		end
@@ -102,7 +131,7 @@ local function getRandomBananaName(): string?
 
 	local selectedWeight = RNG:NextNumber(0, totalWeight)
 	local accumulatedWeight = 0
-	for bananaName, chance in pairs(BananaConfig.Chances) do
+	for bananaName, chance in pairs(bananaConfig.Chances) do
 		if chance <= 0 then
 			continue
 		end
@@ -125,30 +154,36 @@ local function cloneBanana(bananaName: string): Model?
 	return templates[RNG:NextInteger(1, #templates)]:Clone()
 end
 
-local function prepareModel(model: Model, anchored: boolean): BasePart?
-	local rootPart = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true)
-	if not rootPart then
-		return nil
-	end
+local function setDroppedBananasVisible(bananas: { Model }, visible: boolean)
+	for _, banana in ipairs(bananas) do
+		if not banana.Parent or banana:GetAttribute("Collectable") == false then
+			continue
+		end
 
-	model.PrimaryPart = rootPart
-	for _, descendant in ipairs(model:GetDescendants()) do
-		if descendant:IsA("BasePart") then
-			descendant.Anchored = false
-			descendant.CanCollide = false
-
-			if descendant ~= rootPart then
-				local weld = Instance.new("WeldConstraint")
-				weld.Name = "BananaWeld"
-				weld.Part0 = rootPart
-				weld.Part1 = descendant
-				weld.Parent = rootPart
+		for _, descendant in ipairs(banana:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				descendant.Transparency = if visible then 0 else 1
 			end
 		end
 	end
+end
 
-	rootPart.Anchored = anchored
-	return rootPart
+local function expireDroppedBananas(bananas: { Model })
+	local blinkDuration = DROP_BLINKS * DROP_BLINK_INTERVAL * 2
+	task.delay(DROP_LIFETIME - blinkDuration, function()
+		for _ = 1, DROP_BLINKS do
+			setDroppedBananasVisible(bananas, false)
+			task.wait(DROP_BLINK_INTERVAL)
+			setDroppedBananasVisible(bananas, true)
+			task.wait(DROP_BLINK_INTERVAL)
+		end
+
+		for _, banana in ipairs(bananas) do
+			if banana.Parent then
+				banana:Destroy()
+			end
+		end
+	end)
 end
 
 local function applyParachuteFall(rootPart: BasePart)
@@ -221,7 +256,7 @@ local function getPlacement(
 			context.mapCFrame.Position.Y + context.mapSize.Y / 2 + RAYCAST_MARGIN,
 			sampledPosition.Z
 		)
-		local result = Workspace:Raycast(
+		local result = workspace:Raycast(
 			rayOrigin,
 			Vector3.new(0, -(context.mapSize.Y + RAYCAST_MARGIN * 2), 0),
 			context.raycastParams
@@ -244,7 +279,7 @@ local function getPlacement(
 		)
 		local blocked = false
 
-		for _, part in ipairs(Workspace:GetPartBoundsInBox(targetBounds, overlapSize, context.overlapParams)) do
+		for _, part in ipairs(workspace:GetPartBoundsInBox(targetBounds, overlapSize, context.overlapParams)) do
 			if part ~= result.Instance then
 				blocked = true
 				break
@@ -259,7 +294,7 @@ local function getPlacement(
 	return nil, nil
 end
 
-local function createAirdropMarker(map: Model, position: Vector3)
+local function createAirdropMarker(map: Model, position: Vector3, markerAirdrop: Model)
 	local marker = Instance.new("Part")
 	marker.Name = "AirdropLandingPosition"
 	marker.Size = Vector3.new(1, 0.1, 1)
@@ -271,12 +306,22 @@ local function createAirdropMarker(map: Model, position: Vector3)
 	marker.Transparency = 1
 	marker.Parent = map
 
-	if AIRDROP_VFX then
+	if AIRDROP_VFX and AIRDROP_VFX:IsA("BasePart") then
 		local clone = AIRDROP_VFX:Clone()
 		clone.Anchored = true
-		clone:PivotTo(marker.CFrame)
+		clone.CanCollide = false
+		clone.CanQuery = false
+		clone.CanTouch = false
+		clone.CFrame = CFrame.new(position + Vector3.yAxis * (clone.Size.Y / 2 + GROUND_CLEARANCE))
+			* clone.CFrame.Rotation
 		clone.Parent = marker
 	end
+
+	markerAirdrop.Destroying:Once(function()
+		if marker.Parent then
+			marker:Destroy()
+		end
+	end)
 end
 
 local function spawnBanana(context: SpawnContext, forcedName: string?): boolean
@@ -292,7 +337,7 @@ local function spawnBanana(context: SpawnContext, forcedName: string?): boolean
 
 	local isSmallCrate = bananaName == SMALL_CRATE_TAG
 	local isSingleBanana = not isSmallCrate and bananaName ~= LARGE_CRATE_TAG
-	local rootPart = prepareModel(banana, not isSmallCrate)
+	local rootPart = bananaModelUtils.prepare(banana, not isSmallCrate)
 	if not rootPart then
 		warn(`{banana.Name} does not contain a BasePart.`)
 		banana:Destroy()
@@ -311,14 +356,14 @@ local function spawnBanana(context: SpawnContext, forcedName: string?): boolean
 	end
 
 	banana:PivotTo(if isSmallCrate then placement + Vector3.new(0, AIRDROP_HEIGHT, 0) else placement)
+	banana:SetAttribute(BANANA_TYPE_ATTRIBUTE, bananaName)
 	banana:SetAttribute("Rotates", isSingleBanana)
-	banana:SetAttribute("Airdrop", isSmallCrate)
 
 	banana.Parent = context.container
 	if isSmallCrate then
 		table.insert(context.airdropPositions, landingPosition)
-		createAirdropMarker(context.container.Parent :: Model, landingPosition)
 		applyParachuteFall(rootPart)
+		createAirdropMarker(context.container.Parent :: Model, landingPosition, banana)
 	end
 
 	local crate = context.crates[bananaName]
@@ -332,6 +377,7 @@ local function spawnBanana(context: SpawnContext, forcedName: string?): boolean
 			action = "Airdrop",
 			currentAirdrop = crate.spawned,
 			maxAirdrops = crate.maximum,
+			landingPosition = landingPosition,
 		})
 	elseif bananaName == LARGE_CRATE_TAG and crate then
 		matchEvent:FireAllClients({
@@ -341,7 +387,7 @@ local function spawnBanana(context: SpawnContext, forcedName: string?): boolean
 		})
 	end
 
-	CollectionService:AddTag(banana, BANANA_TAG)
+	collectionService:AddTag(banana, BANANA_TAG)
 	return true
 end
 
@@ -364,7 +410,7 @@ local function createContext(map: Model, matchDuration: number): SpawnContext
 
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Include
-	raycastParams.FilterDescendantsInstances = { map:FindFirstChild("Ground") or map }
+	raycastParams.FilterDescendantsInstances = { map:FindFirstChild("Ground", true) or map }
 	raycastParams.IgnoreWater = true
 	raycastParams.RespectCanCollide = true
 
@@ -394,30 +440,34 @@ local function createContext(map: Model, matchDuration: number): SpawnContext
 	}
 end
 
-function Spawner.spawnBananasInMap(map: Model, matchDuration: number)
+function bananaSpawner.spawnBananasInMap(map: Model, matchDuration: number)
 	local context = createContext(map, matchDuration)
+	activeContext = context
 
-	for _ = 1, BananaConfig.MAX_BANANAS_SPAWNED do
+	for _ = 1, bananaConfig.MAX_BANANAS_SPAWNED do
 		spawnBanana(context, nil)
 	end
 
 	local elapsedTime = 0
 	while map.Parent do
-		task.wait(BananaConfig.SPAWN_RATE)
+		task.wait(bananaConfig.SPAWN_RATE)
 		if not map.Parent then
 			break
 		end
 
 		local matchStartTime = map:GetAttribute(MATCH_START_TIME_ATTRIBUTE)
-		local matchStarted = typeof(matchStartTime) == "number"
-		if matchStarted then
-			elapsedTime = math.max(Workspace:GetServerTimeNow() - matchStartTime, 0)
+		if typeof(matchStartTime) == "number" then
+			elapsedTime = math.max(workspace:GetServerTimeNow() - matchStartTime, 0)
 			processGuaranteedSpawns(context, elapsedTime)
 		end
 
-		if #context.container:GetChildren() < BananaConfig.MAX_BANANAS_SPAWNED then
+		if getSpawnedBananaCount(context) < bananaConfig.MAX_BANANAS_SPAWNED then
 			spawnBanana(context, nil)
 		end
+	end
+
+	if activeContext == context then
+		activeContext = nil
 	end
 
 	for bananaName, crate in pairs(context.crates) do
@@ -428,6 +478,82 @@ function Spawner.spawnBananasInMap(map: Model, matchDuration: number)
 	end
 end
 
+function bananaSpawner.canCollectDroppedBanana(banana: Model, player: Player): boolean
+	return droppedBananaOwners[banana] ~= player
+end
+
+function bananaSpawner.spawnDroppedBananas(position: Vector3, amount: number, targetPlayer: Player): number
+	local context = activeContext
+	local templates = bananaTemplates[NORMAL_BANANA_TAG]
+	if amount <= 0 or not context or not context.container.Parent or not templates or #templates == 0 then
+		return 0
+	end
+
+	local spawnAmount = math.floor(amount)
+	local angleOffset = RNG:NextNumber(0, math.pi * 2)
+
+	task.spawn(function()
+		local droppedBananas: { Model } = {}
+
+		for index = 1, spawnAmount do
+			if not context.container.Parent then
+				break
+			end
+
+			local banana = cloneBanana(NORMAL_BANANA_TAG)
+			if not banana then
+				break
+			end
+
+			local rootPart = bananaModelUtils.prepare(banana, false)
+			if not rootPart then
+				banana:Destroy()
+				break
+			end
+
+			local angle = angleOffset + ((index - 1) / spawnAmount) * math.pi * 2
+			local direction = Vector3.new(math.cos(angle), 0, math.sin(angle))
+			local spawnPosition = position
+				+ direction * DROP_SPAWN_RADIUS
+				+ Vector3.yAxis * DROP_SPAWN_HEIGHT
+
+			banana:PivotTo(CFrame.new(spawnPosition) * banana:GetPivot().Rotation)
+			banana:SetAttribute(BANANA_TYPE_ATTRIBUTE, NORMAL_BANANA_TAG)
+			banana:SetAttribute(DROPPED_BANANA_ATTRIBUTE, true)
+			banana:SetAttribute("Collectable", false)
+			banana:SetAttribute("Points", 1)
+			banana:SetAttribute("Rotates", false)
+			banana.Parent = context.container
+			droppedBananaOwners[banana] = targetPlayer
+			collectionService:AddTag(banana, BANANA_TAG)
+
+			if rootPart:CanSetNetworkOwnership() then
+				rootPart:SetNetworkOwner(nil)
+			end
+			rootPart:ApplyImpulse(
+				(direction * DROP_HORIZONTAL_SPEED + Vector3.yAxis * DROP_UPWARD_SPEED) * rootPart.AssemblyMass
+			)
+
+			task.delay(DROP_COLLECT_DELAY, function()
+				if banana.Parent then
+					banana:SetAttribute("Collectable", true)
+				end
+			end)
+
+			table.insert(droppedBananas, banana)
+			if index % DROP_SPAWN_BATCH_SIZE == 0 then
+				runService.Heartbeat:Wait()
+			end
+		end
+
+		if #droppedBananas > 0 then
+			expireDroppedBananas(droppedBananas)
+		end
+	end)
+
+	return spawnAmount
+end
+
 bananaTemplates = cacheTemplates()
 
-return Spawner
+return bananaSpawner

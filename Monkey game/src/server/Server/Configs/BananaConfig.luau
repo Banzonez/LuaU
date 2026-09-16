@@ -1,4 +1,6 @@
-local BananaConfig = {
+--!strict
+
+local bananaConfig = {
 	Chances = {
 		Banana = 45,
 		GoldBanana = 25,
@@ -17,8 +19,8 @@ local BananaConfig = {
 	SPAWN_RATE = 1,
 }
 
-function BananaConfig.getName(index: number): string?
-	return BananaConfig.TagsNames[index]
+function bananaConfig.getName(index: number): string?
+	return bananaConfig.TagsNames[index]
 end
 
-return BananaConfig
+return bananaConfig

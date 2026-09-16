@@ -1,18 +1,20 @@
-local Server = script.Parent.Server
+--!strict
 
-local Systems = Server:FindFirstChild("Systems")
-assert(Systems, "Server.Systems is missing.")
-local RemotesSetupModule = Systems:FindFirstChild("RemotesSetup")
-assert(RemotesSetupModule, "Server.Systems.RemotesSetup is missing.")
-local RemotesSetup = require(RemotesSetupModule)
+local server = script.Parent.Server
 
-RemotesSetup.init()
+local systems = server:FindFirstChild("Systems")
+assert(systems, "Server.Systems is missing.")
+local remotesSetupModule = systems:FindFirstChild("RemotesSetup")
+assert(remotesSetupModule, "Server.Systems.RemotesSetup is missing.")
+local remotesSetup = require(remotesSetupModule)
 
-for _, script in ipairs(Server:GetDescendants()) do
-	if script:IsA("ModuleScript") then
-		local mdl = require(script)
-		if mdl.init then
-			mdl.init()
+remotesSetup.init()
+
+for _, descendant in ipairs(server:GetDescendants()) do
+	if descendant:IsA("ModuleScript") then
+		local module = require(descendant)
+		if module.init then
+			module.init()
 		end
 	end
 end
