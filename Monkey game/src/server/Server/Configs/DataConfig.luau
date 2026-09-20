@@ -1,12 +1,16 @@
 local Config = {
      Inventory = {
           Gloves = {
+               EquippedGlove = "Slap Glove Normal",
+               EquippedFolder = "Normal",
                "Slap Glove Normal",
                -- "Slap Glove Blue"
                -- ...
           },
 
           MonkeyColors = {
+               EquippedColor = "StarterCharacter",
+               EquippedFolder = "Normal",
                "StarterCharacter"
                -- "StarterCharacterRed"
                -- ...

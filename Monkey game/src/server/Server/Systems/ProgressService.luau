@@ -1,4 +1,3 @@
-local dataHandler = require(script.Parent.DataHandler)
 local progressConfig = require(script.Parent.Parent.Configs.ProgressConfig)
 
 export type RewardSource = "Winning" | "CollectingBananas" | "LandingPunches" | "CompletingQuests" | "PlayingMatches"
@@ -16,12 +15,6 @@ type ProgressService = {
 	finishMatch: (player: Player) -> (),
 }
 
-local DATA_PATHS = {
-	Bananas = { "Bananas" },
-	Coins = { "Coins" },
-	XP = { "XP" },
-}
-
 local progressService: ProgressService = {} :: ProgressService
 local matchCoinsEarned: { [Player]: number } = {}
 
@@ -29,13 +22,18 @@ local function isValidAmount(amount: number): boolean
 	return amount == amount and amount > 0 and amount < math.huge
 end
 
-local function increment(player: Player, dataName: "Bananas" | "Coins" | "XP", amount: number): boolean
+local function incrementAttribute(player: Player, dataName: "Bananas" | "Coins" | "XP", amount: number): boolean
 	if amount == 0 then
 		return true
 	end
 
-	local success = dataHandler.incrementValue(player, DATA_PATHS[dataName], amount)
-	return success
+	local currentValue = player:GetAttribute(dataName)
+	if typeof(currentValue) ~= "number" then
+		return false
+	end
+
+	player:SetAttribute(dataName, currentValue + amount)
+	return true
 end
 
 function progressService.addBananas(player: Player, amount: number): boolean
@@ -43,7 +41,7 @@ function progressService.addBananas(player: Player, amount: number): boolean
 		return false
 	end
 
-	return increment(player, "Bananas", math.floor(amount))
+	return incrementAttribute(player, "Bananas", math.floor(amount))
 end
 
 function progressService.award(player: Player, source: RewardSource, quantity: number?): boolean
@@ -55,8 +53,8 @@ function progressService.award(player: Player, source: RewardSource, quantity: n
 
 	local coins = math.floor(reward.Coins * multiplier)
 	local xp = math.floor(reward.XP * multiplier)
-	local coinsAdded = increment(player, "Coins", coins)
-	local xpAdded = increment(player, "XP", xp)
+	local coinsAdded = incrementAttribute(player, "Coins", coins)
+	local xpAdded = incrementAttribute(player, "XP", xp)
 	if coinsAdded and matchCoinsEarned[player] then
 		matchCoinsEarned[player] += coins
 	end
@@ -74,7 +72,7 @@ function progressService.discardMatchCoins(player: Player): boolean
 		return true
 	end
 
-	local success = increment(player, "Coins", -coins)
+	local success = incrementAttribute(player, "Coins", -coins)
 	if success then
 		matchCoinsEarned[player] = nil
 	end

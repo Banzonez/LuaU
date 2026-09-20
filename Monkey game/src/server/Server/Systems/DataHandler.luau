@@ -7,9 +7,15 @@ local dataUtil = require(script.Parent.Parent.Utils.DataUtil)
 
 local DATA_LOADED_ATTRIBUTE = "DataLoaded"
 local SESSION_LOCK_TIMEOUT = 180
-local AUTOSAVE_INTERVAL = 60
 local SHUTDOWN_SAVE_TIMEOUT = 25
 local SESSION_ID = if game.JobId ~= "" then game.JobId else `Studio_{httpService:GenerateGUID(false)}`
+
+local NESTED_DATA_ATTRIBUTES = {
+	EquippedGlove = { "Inventory", "Gloves", "EquippedGlove" },
+	EquippedGloveFolder = { "Inventory", "Gloves", "EquippedFolder" },
+	EquippedMonkeyColor = { "Inventory", "MonkeyColors", "EquippedColor" },
+	EquippedMonkeyFolder = { "Inventory", "MonkeyColors", "EquippedFolder" },
+}
 
 type PlayerData = { [string]: any }
 type DataPath = { string | number }
@@ -27,15 +33,12 @@ type PlayerState = {
 	version: number,
 	savedVersion: number,
 	saving: boolean,
-	settingAttribute: boolean,
-	connections: { RBXScriptConnection },
 }
 
 local initialized = false
 local closing = false
 local states: { [Player]: PlayerState } = {}
 local loadingPlayers: { [Player]: boolean } = {}
-local autosaveRandom = Random.new()
 local dataHandler = {}
 
 local function getKey(player: Player): string
@@ -76,16 +79,61 @@ local function isAttributeValue(value: any): boolean
 	return valueType == "boolean" or valueType == "number" or valueType == "string"
 end
 
-local function setConfiguredAttribute(player: Player, state: PlayerState, name: string, value: any)
-	state.settingAttribute = true
+local function setConfiguredAttribute(player: Player, name: string, value: any)
 	player:SetAttribute(name, value)
-	state.settingAttribute = false
 end
 
-local function syncTopLevelAttribute(player: Player, state: PlayerState, path: DataPath, value: any)
-	if #path == 1 and typeof(path[1]) == "string" and isAttributeValue(value) then
-		setConfiguredAttribute(player, state, path[1], value)
+local function syncTopLevelAttribute(player: Player, path: DataPath, value: any)
+	local attributeName = path[1]
+	if #path == 1 and typeof(attributeName) == "string" and isAttributeValue(value) then
+		setConfiguredAttribute(player, attributeName, value)
 	end
+end
+
+local function pathsMatch(first: DataPath, second: DataPath): boolean
+	if #first ~= #second then
+		return false
+	end
+
+	for index, value in ipairs(first) do
+		if second[index] ~= value then
+			return false
+		end
+	end
+
+	return true
+end
+
+local function syncNestedAttribute(player: Player, path: DataPath, value: any)
+	if not isAttributeValue(value) then
+		return
+	end
+
+	for attributeName, attributePath in pairs(NESTED_DATA_ATTRIBUTES) do
+		if pathsMatch(path, attributePath) then
+			setConfiguredAttribute(player, attributeName, value)
+			return
+		end
+	end
+end
+
+local function captureRuntimeAttributes(player: Player, state: PlayerState)
+	for name, template in pairs(defaultData) do
+		local value = player:GetAttribute(name)
+		if isAttributeValue(template) and dataUtil.matchesTemplate(value, template) then
+			dataUtil.setValue(state.data, { name }, value)
+		end
+	end
+
+	for attributeName, path in pairs(NESTED_DATA_ATTRIBUTES) do
+		local value = player:GetAttribute(attributeName)
+		local template = dataUtil.getValue(defaultData, path)
+		if template ~= nil and dataUtil.matchesTemplate(value, template) then
+			dataUtil.setValue(state.data, path, value)
+		end
+	end
+
+	state.version += 1
 end
 
 local function setValue(player: Player, path: DataPath, value: any): boolean
@@ -100,41 +148,24 @@ local function setValue(player: Player, path: DataPath, value: any): boolean
 	end
 
 	state.version += 1
-	syncTopLevelAttribute(player, state, path, value)
+	syncTopLevelAttribute(player, path, value)
+	syncNestedAttribute(player, path, value)
 	return true
 end
 
 local function connectAttributes(player: Player, state: PlayerState)
-	state.settingAttribute = true
 	for name, template in pairs(defaultData) do
 		local value = state.data[name]
 		if isAttributeValue(template) and isAttributeValue(value) then
 			player:SetAttribute(name, value)
 		end
 	end
-	state.settingAttribute = false
 
-	for name, template in pairs(defaultData) do
-		if not isAttributeValue(template) then
-			continue
+	for attributeName, path in pairs(NESTED_DATA_ATTRIBUTES) do
+		local value = dataUtil.getValue(state.data, path)
+		if isAttributeValue(value) then
+			player:SetAttribute(attributeName, value)
 		end
-
-		table.insert(
-			state.connections,
-			player:GetAttributeChangedSignal(name):Connect(function()
-				if state.settingAttribute or states[player] ~= state then
-					return
-				end
-
-				local value = player:GetAttribute(name)
-				if dataUtil.matchesTemplate(value, template) then
-					state.data[name] = value
-					state.version += 1
-				else
-					setConfiguredAttribute(player, state, name, state.data[name])
-				end
-			end)
-		)
 	end
 end
 
@@ -178,6 +209,9 @@ local function savePlayerState(player: Player, state: PlayerState, releaseSessio
 	if state.saving then
 		return false
 	end
+	if releaseSession then
+		captureRuntimeAttributes(player, state)
+	end
 
 	state.saving = true
 	local savedVersion = state.version
@@ -203,20 +237,12 @@ local function savePlayerState(player: Player, state: PlayerState, releaseSessio
 	return false
 end
 
-local function disconnectState(state: PlayerState)
-	for _, connection in ipairs(state.connections) do
-		connection:Disconnect()
-	end
-	table.clear(state.connections)
-end
-
 local function releasePlayer(player: Player)
 	local state = states[player]
 	if not state then
 		return
 	end
 
-	disconnectState(state)
 	local deadline = os.clock() + SHUTDOWN_SAVE_TIMEOUT
 	while state.saving and os.clock() < deadline do
 		task.wait(0.1)
@@ -248,8 +274,6 @@ local function loadPlayer(player: Player)
 		version = 0,
 		savedVersion = 0,
 		saving = false,
-		settingAttribute = false,
-		connections = {},
 	}
 	states[player] = state
 
@@ -313,15 +337,6 @@ function dataHandler.init()
 	end)
 	players.PlayerRemoving:Connect(function(player)
 		task.defer(releasePlayer, player)
-	end)
-
-	task.spawn(function()
-		while not closing do
-			task.wait(AUTOSAVE_INTERVAL + autosaveRandom:NextNumber(0, 5))
-			for player, state in pairs(states) do
-				task.spawn(savePlayerState, player, state, false)
-			end
-		end
 	end)
 
 	game:BindToClose(function()
