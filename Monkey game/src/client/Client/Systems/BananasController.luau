@@ -1,5 +1,3 @@
---!strict
-
 local collectionService = game:GetService("CollectionService")
 local players = game:GetService("Players")
 local replicatedStorage = game:GetService("ReplicatedStorage")
@@ -7,6 +5,7 @@ local runService = game:GetService("RunService")
 local tweenService = game:GetService("TweenService")
 
 local guiAnimator = require(script.Parent.Parent.Utils.GuiAnimator)
+local soundUtils = require(replicatedStorage:WaitForChild("Shared"):WaitForChild("Utils"):WaitForChild("SoundUtils"))
 
 local player = players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -26,6 +25,8 @@ local bananaFrame = matchGui:WaitForChild("BananaCounter") :: Frame
 local bananaText = bananaFrame:WaitForChild("Counter") :: TextLabel
 
 local POP_DISTANCE = 50
+local POP_LIFETIME = 2
+local POP_FADE_DELAY = POP_LIFETIME / 2
 local AIRDROP_MESSAGE_DURATION = 2
 local COLLECTION_DURATION = 0.35
 local COLLECTION_ARC_HEIGHT = 0
@@ -40,6 +41,7 @@ local RNG = Random.new()
 type IdleAnimation = {
 	origin: CFrame,
 	phase: number,
+	startedAt: number,
 }
 
 type CollectionAnimation = {
@@ -51,6 +53,18 @@ type CollectionAnimation = {
 	elapsed: number,
 }
 
+type CollectionPopup = {
+	label: TextLabel,
+	worldPosition: Vector3,
+	elapsed: number,
+}
+
+type SoundData = {
+	soundId: string,
+	volume: number,
+	playbackSpeed: number,
+}
+
 type MatchEventData = {
 	action: string?,
 	currentAirdrop: number?,
@@ -60,30 +74,42 @@ type MatchEventData = {
 	duration: number?,
 	pos: Vector3?,
 	points: number?,
+	sound: SoundData?,
 }
 
 local collectingBananas: { [Model]: CollectionAnimation } = {}
+local collectionPopups: { CollectionPopup } = {}
 local rotatingBananas: { [Model]: IdleAnimation } = {}
+local rotatingBananaConnections: { [Model]: RBXScriptConnection } = {}
 local animationTime = 0
 local notificationIds = {
 	Airdrop = 0,
 	Crate = 0,
 }
 
-local popInfo = TweenInfo.new(0.5, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut)
-
 local airdropAnimator = guiAnimator.new(airdropFrame, "PopIn")
 local crateAnimator = guiAnimator.new(crateFrame, "PopIn")
 
 local function trackBanana(instance: Instance)
-	if not instance:IsA("Model") or instance:GetAttribute("Rotates") ~= true then
+	if not instance:IsA("Model") then
 		return
 	end
 
-	rotatingBananas[instance] = {
-		origin = instance:GetPivot(),
-		phase = RNG:NextNumber(0, math.pi * 2),
-	}
+	if not rotatingBananaConnections[instance] then
+		rotatingBananaConnections[instance] = instance:GetAttributeChangedSignal("Rotates"):Connect(function()
+			trackBanana(instance)
+		end)
+	end
+
+	if instance:GetAttribute("Rotates") == true then
+		rotatingBananas[instance] = {
+			origin = instance:GetPivot(),
+			phase = RNG:NextNumber(0, math.pi * 2),
+			startedAt = animationTime,
+		}
+	else
+		rotatingBananas[instance] = nil
+	end
 end
 
 local function updateIdleAnimations(deltaTime: number)
@@ -96,11 +122,9 @@ local function updateIdleAnimations(deltaTime: number)
 		end
 
 		local verticalOffset = math.sin(animationTime * BOB_SPEED + animation.phase) * BOB_HEIGHT
-		banana:PivotTo(
-			animation.origin
-				* CFrame.new(0, verticalOffset, 0)
-				* CFrame.Angles(0, animationTime * ROTATION_SPEED, 0)
-		)
+		local rotation = CFrame.Angles(0, (animationTime - animation.startedAt) * ROTATION_SPEED, 0)
+		local position = animation.origin.Position + Vector3.yAxis * verticalOffset
+		banana:PivotTo(CFrame.new(position) * rotation * animation.origin.Rotation)
 	end
 end
 
@@ -180,6 +204,7 @@ local function createText(points: number): TextLabel
 	textLabel.TextScaled = true
 	textLabel.Text = "+" .. tostring(points)
 	textLabel.TextColor3 = Color3.fromRGB(235, 232, 106)
+	textLabel.TextTransparency = 0
 	textLabel.TextStrokeTransparency = 0
 	textLabel.ZIndex = 100
 	textLabel.Visible = true
@@ -187,51 +212,54 @@ local function createText(points: number): TextLabel
 	return textLabel
 end
 
-local function showUICollect(position: Vector3, parent: Instance, points: number)
-	local camera = workspace.CurrentCamera
-	if not camera then
-		return
-	end
-
-	local screenPosition: Vector3
-	local isOnScreen: boolean
-	if matchGui.IgnoreGuiInset then
-		screenPosition, isOnScreen = camera:WorldToViewportPoint(position)
-	else
-		screenPosition, isOnScreen = camera:WorldToScreenPoint(position)
-	end
-
-	if not isOnScreen or screenPosition.Z <= 0 then
-		return
-	end
-
-	local uiPosition = Vector2.new(screenPosition.X, screenPosition.Y)
-
-	-- Camera projection returns screen coordinates, but a GuiObject's
-	-- Position is relative to its immediate parent.
-	if parent:IsA("GuiObject") then
-		uiPosition -= parent.AbsolutePosition
-	end
-
+local function showUICollect(position: Vector3, points: number)
 	local text = createText(points)
 	text.AnchorPoint = Vector2.new(0.5, 0.5)
-	text.Position = UDim2.fromOffset(uiPosition.X, uiPosition.Y)
-	text.Parent = parent
-
-	local targetPosition = UDim2.fromOffset(
-		uiPosition.X,
-		uiPosition.Y - POP_DISTANCE
-	)
-
-	local tween = tweenService:Create(text, popInfo, {
-		Position = targetPosition,
+	text.Parent = matchGui
+	table.insert(collectionPopups, {
+		label = text,
+		worldPosition = position,
+		elapsed = 0,
 	})
+end
 
-	tween.Completed:Once(function()
-		text:Destroy()
-	end)
+local function updateCollectionPopups(deltaTime: number)
+	local camera = workspace.CurrentCamera
 
-	tween:Play()
+	for index = #collectionPopups, 1, -1 do
+		local popup = collectionPopups[index]
+		popup.elapsed += deltaTime
+
+		if popup.elapsed >= POP_LIFETIME or not popup.label.Parent then
+			popup.label:Destroy()
+			table.remove(collectionPopups, index)
+			continue
+		end
+
+		if not camera then
+			popup.label.Visible = false
+			continue
+		end
+
+		local screenPosition: Vector3
+		local isOnScreen: boolean
+		if matchGui.IgnoreGuiInset then
+			screenPosition, isOnScreen = camera:WorldToViewportPoint(popup.worldPosition)
+		else
+			screenPosition, isOnScreen = camera:WorldToScreenPoint(popup.worldPosition)
+		end
+
+		local progress = popup.elapsed / POP_LIFETIME
+		local fadeProgress = math.clamp(
+			(popup.elapsed - POP_FADE_DELAY) / (POP_LIFETIME - POP_FADE_DELAY),
+			0,
+			1
+		)
+		popup.label.Visible = isOnScreen and screenPosition.Z > 0
+		popup.label.Position = UDim2.fromOffset(screenPosition.X, screenPosition.Y - POP_DISTANCE * progress)
+		popup.label.TextTransparency = fadeProgress
+		popup.label.TextStrokeTransparency = fadeProgress
+	end
 end
 
 local function changeBananaText(matchFolder: Folder)
@@ -243,6 +271,12 @@ local function changeBananaText(matchFolder: Folder)
 	end
 
 	bananaText.Text = tostring(points)
+
+	if points <= 0 then
+		bananaFrame.Visible = false
+	else
+		bananaFrame.Visible = true
+	end
 end
 
 local function connectBananaEntry(instance: Instance, matchFolder: Folder)
@@ -280,7 +314,7 @@ function Controller.init()
 
 	airdropFrame.Visible = false
 	crateFrame.Visible = false
-	bananaFrame.Visible = true
+	bananaFrame.Visible = false
 
 	bananaText.Text = "0"
 
@@ -321,9 +355,12 @@ function Controller.init()
 			if banana and collector and points and position then
 				local duration = data.duration or COLLECTION_DURATION
 				animateBananaCollect(banana, collector, duration)
+				if data.sound then
+					soundUtils.playSpatialData(data.sound, position)
+				end
 
 				if collector == player then
-					showUICollect(position, matchGui, points)
+					showUICollect(position, points)
 				end
 			end
 		end
@@ -331,7 +368,14 @@ function Controller.init()
 
 	collectionService:GetInstanceAddedSignal(BANANA_TAG):Connect(trackBanana)
 	collectionService:GetInstanceRemovedSignal(BANANA_TAG):Connect(function(instance)
-		rotatingBananas[instance :: Model] = nil
+		if instance:IsA("Model") then
+			rotatingBananas[instance] = nil
+			local connection = rotatingBananaConnections[instance]
+			if connection then
+				connection:Disconnect()
+				rotatingBananaConnections[instance] = nil
+			end
+		end
 	end)
 
 	for _, instance in ipairs(collectionService:GetTagged(BANANA_TAG)) do
@@ -341,6 +385,7 @@ function Controller.init()
 	runService.PreRender:Connect(function(deltaTime)
 		updateIdleAnimations(deltaTime)
 		updateCollectionAnimations(deltaTime)
+		updateCollectionPopups(deltaTime)
 	end)
 
 	local matchFolder = player:FindFirstChild("MatchBananas")

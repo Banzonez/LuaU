@@ -1,24 +1,26 @@
---!strict
-
 local players = game:GetService("Players")
 local replicatedStorage = game:GetService("ReplicatedStorage")
 local serverStorage = game:GetService("ServerStorage")
 local workspace = game:GetService("Workspace")
 
 local bananasSpawner = require(script.Parent.Parent.Utils.BananasSpawner)
+local progressService = require(script.Parent.ProgressService)
 
-local sharedFolder = replicatedStorage:FindFirstChild("Shared")
-local eventsFolder = sharedFolder:FindFirstChild("Events")
-local matchEvent = eventsFolder:FindFirstChild("MatchEvent")
+local sharedFolder = replicatedStorage:FindFirstChild("Shared") :: Folder
+local sharedUtilsFolder = sharedFolder:FindFirstChild("Utils") :: Folder
+local soundUtils = require(sharedUtilsFolder:FindFirstChild("SoundUtils"))
+local eventsFolder = sharedFolder:FindFirstChild("Events") :: Folder
+local matchEvent = eventsFolder:FindFirstChild("MatchEvent") :: RemoteEvent
 
-local assetsFolder = serverStorage:FindFirstChild("Assets")
-local mapsFolder = assetsFolder:FindFirstChild("Maps")
-local crownTemplate = assetsFolder:FindFirstChild("Crown")
+local assetsFolder = serverStorage:FindFirstChild("Assets") :: Folder
+local mapsFolder = assetsFolder:FindFirstChild("Maps") :: Folder
+local crownTemplate = assetsFolder:FindFirstChild("Crown") :: Accessory
+local soundsFolder = serverStorage:FindFirstChild("Sounds") :: Folder
 
-local intermissionModel = workspace:FindFirstChild("Lobby")
+local intermissionModel = workspace:FindFirstChild("Lobby") :: Model
 
-local INTERMISSION_DURATION = 10
-local MATCH_DURATION = 5 * 60
+local INTERMISSION_DURATION = 30 -- 30
+local MATCH_DURATION = 5 * 60 -- 5 minutes
 local MATCH_START_COUNTDOWN = 3
 local RESPAWN_IN_MATCH = true -- Set to false to leave match respawning to your game.
 local CHARACTER_ASSURANCE = 0.1
@@ -39,7 +41,7 @@ local matchService = {}
 local function getSpawnCFrame(model: Model): CFrame
 	local spawns = model:FindFirstChild("Spawns")
 	if spawns then
-		local validSpawns = {}
+		local validSpawns: { BasePart } = {}
 
 		for _, descendant in ipairs(spawns:GetDescendants()) do
 			if descendant:IsA("BasePart") then
@@ -132,16 +134,20 @@ local function getMatchBananaPoints(player: Player): number
 	return points
 end
 
-local function settleMatchBananas(player: Player)
+local function settleMatchBananas(player: Player): boolean
 	local matchBananas = player:FindFirstChild(MATCH_BANANAS_FOLDER)
 	if not matchBananas then
-		return
+		return true
 	end
 
-	local bananasAttribute = player:GetAttribute("Bananas")
-	local currentBananas = if typeof(bananasAttribute) == "number" then bananasAttribute else 0
-	player:SetAttribute("Bananas", currentBananas + getMatchBananaPoints(player))
+	local collectedPoints = getMatchBananaPoints(player)
+	if collectedPoints > 0 and not progressService.addBananas(player, collectedPoints) then
+		warn(`Could not settle {collectedPoints} bananas for {player.Name}.`)
+		return false
+	end
+
 	prepareMatchBananas(player)
+	return true
 end
 
 local function removeLeaderVisuals(player: Player)
@@ -302,6 +308,26 @@ local function sendCountdown(phase: string, seconds: number, map: Model?)
 	})
 end
 
+local function playGlobalSound(soundName: string)
+	if soundsFolder then
+		soundUtils.playNamed(soundsFolder, soundName)
+	end
+end
+
+local function sendSound(player: Player, soundName: string)
+	if not soundsFolder then
+		return
+	end
+
+	local soundData = soundUtils.getNamedData(soundsFolder, soundName)
+	if soundData then
+		matchEvent:FireClient(player, {
+			action = "PlaySound",
+			sound = soundData,
+		})
+	end
+end
+
 local function destroyActiveMap()
 	if activeMap then
 		activeMap:Destroy()
@@ -310,7 +336,7 @@ local function destroyActiveMap()
 end
 
 local function chooseMap(): Model
-	local maps = {}
+	local maps: { Model } = {}
 	for _, instance in ipairs(mapsFolder:GetChildren()) do
 		if instance:IsA("Model") then
 			table.insert(maps, instance)
@@ -358,15 +384,22 @@ local function runMatch()
 	table.clear(participatingPlayers)
 	for _, player in ipairs(playersForMatch) do
 		participatingPlayers[player] = true
+		progressService.beginMatch(player)
 		prepareMatchBananas(player)
 	end
 
 	-- Configure match characters here
 	movePlayersToModel(playersForMatch, selectedMap)
+	for _, player in ipairs(playersForMatch) do
+		if player.Parent == players then
+			sendSound(player, soundUtils.Names.TeleportToMatch)
+		end
+	end
 	task.spawn(bananasSpawner.spawnBananasInMap, selectedMap, MATCH_DURATION)
 
 	for seconds = MATCH_START_COUNTDOWN, 1, -1 do
 		sendCountdown("MatchStarting", seconds, selectedMap)
+		playGlobalSound(soundUtils.Names.MatchCountdown)
 		task.wait(1)
 	end
 
@@ -382,15 +415,32 @@ local function runMatch()
 	end
 
 	selectedMap:SetAttribute(BANANAS_COLLECTABLE_ATTRIBUTE, false)
+	local winner = matchLeader
 	setMatchLeader(nil)
 	for _, player in ipairs(playersForMatch) do
 		if player.Parent == players then
 			settleMatchBananas(player)
+			progressService.award(player, "PlayingMatches")
+			if player == winner then
+				progressService.award(player, "Winning")
+			end
+			progressService.finishMatch(player)
 		end
 	end
 	destroyActiveMap()
 	phase = "Intermission"
+	movePlayersToModel(playersForMatch, intermissionModel)
+	for _, player in ipairs(playersForMatch) do
+		if player.Parent == players then
+			local soundName = if player == winner then soundUtils.Names.MatchVictory else soundUtils.Names.MatchDefeat
+			sendSound(player, soundName)
+		end
+	end
 	table.clear(participatingPlayers)
+end
+
+function matchService.isActivePlayer(player: Player): boolean
+	return phase == "Match" and participatingPlayers[player] == true
 end
 
 function matchService.init()
@@ -405,7 +455,7 @@ function matchService.init()
 	players.PlayerAdded:Connect(connectPlayer)
 	players.PlayerRemoving:Connect(function(player)
 		if participatingPlayers[player] then
-			settleMatchBananas(player)
+			progressService.discardMatchCoins(player)
 			participatingPlayers[player] = nil
 		end
 

@@ -1,18 +1,28 @@
---!strict
-
+local debris = game:GetService("Debris")
 local players = game:GetService("Players")
 local replicatedStorage = game:GetService("ReplicatedStorage")
 local serverStorage = game:GetService("ServerStorage")
 local workspace = game:GetService("Workspace")
 
 local bananasSpawner = require(script.Parent.Parent.Utils.BananasSpawner)
+local ragdollUtils = require(script.Parent.Parent.Utils.RagdollUtils)
+local matchService = require(script.Parent.MatchService)
+local progressService = require(script.Parent.ProgressService)
 
 local sharedFolder = replicatedStorage:WaitForChild("Shared")
+local sharedUtilsFolder = sharedFolder:FindFirstChild("Utils") :: Folder
+local soundUtils = require(sharedUtilsFolder:FindFirstChild("SoundUtils"))
 local eventsFolder = sharedFolder:WaitForChild("Events")
 local inputEvent = eventsFolder:WaitForChild("InputEvent") :: RemoteEvent
+local matchEvent = eventsFolder:WaitForChild("MatchEvent") :: RemoteEvent
 
 local assetsFolder = serverStorage:WaitForChild("Assets")
+local vfxFolder = assetsFolder:FindFirstChild("VFX")
+local soundsFolder = serverStorage:FindFirstChild("Sounds")
+
 local glovesFolder = assetsFolder:WaitForChild("SlapGloves")
+local _normalGlovesFolder = glovesFolder:WaitForChild("Normal")
+local _pastelGlovesFolder = glovesFolder:WaitForChild("Pastel")
 
 local ACTION_NAME = "Punch"
 local EQUIPPED_GLOVE_ATTRIBUTE = "EquippedGlove"
@@ -21,12 +31,26 @@ local REST_GLOVE_MOTOR_NAME = "CombatGloveRestMotor"
 local ATTACK_GLOVE_MOTOR_NAME = "CombatGloveAttackMotor"
 local DEFAULT_GLOVE = "Slap Glove Normal"
 local PUNCH_ANIMATION_ID = "rbxassetid://110154207964571"
-local PUNCH_ANIMATION_SPEED = 1
+local PUNCH_ANIMATION_SPEED = 0.75
 local PUNCH_COOLDOWN = 0.6
 local HITBOX_RADIUS = 13
 local HITBOX_ANGLE = 135
 local HITBOX_COS_THRESHOLD = math.cos(math.rad(HITBOX_ANGLE / 2))
 local MATCH_BANANAS_FOLDER = "MatchBananas"
+local HIT_VFX_NAME = "HitVFX"
+local IFRAME_VFX_NAME = "IFrameVFX"
+local HIT_VFX_LIFETIME = 1.25
+local RAGDOLL_DURATION = 2.5
+local RECOVERY_IFRAME_DURATION = 3
+local KNOCKBACK_HORIZONTAL_SPEED = 30
+local KNOCKBACK_UPWARD_SPEED = 12
+local KNOCKBACK_TILT_SPEED = 4
+local SERVER_OWNERSHIP_DURATION = 0.2
+local HIT_VFX_HEIGHT = 1
+local GLOVE_MOTOR_NAMES = {
+	[REST_GLOVE_MOTOR_NAME] = true,
+	[ATTACK_GLOVE_MOTOR_NAME] = true,
+}
 
 local ATTACK_ROTATION = CFrame.Angles(0, math.rad(90), 0) * CFrame.Angles(math.rad(-90), 0, 0)
 local REST_HANDLE_ROTATION = CFrame.Angles(0, 0, math.rad(45)) * ATTACK_ROTATION
@@ -37,6 +61,7 @@ local punchAnimation = Instance.new("Animation")
 punchAnimation.AnimationId = PUNCH_ANIMATION_ID
 
 type GloveStatus = "Idle" | "Attacking"
+type StunResult = "Hit" | "Blocked" | "Invalid"
 
 type PlayerState = {
 	character: Model,
@@ -54,6 +79,12 @@ type PlayerState = {
 	attackId: number,
 }
 
+type TargetState = {
+	character: Model,
+	recoveryId: number,
+	invulnerableUntil: number,
+}
+
 type CombatService = {
 	equipGlove: (player: Player, gloveName: string) -> boolean,
 	init: () -> (),
@@ -62,10 +93,12 @@ type CombatService = {
 local initialized = false
 local playerStates: { [Player]: PlayerState } = {}
 local lastPunchTimes: { [Player]: number } = {}
+local targetStates: { [Player]: TargetState } = {}
 local combatService: CombatService = {} :: CombatService
 
-local function getGloveTemplate(gloveName: string): Tool?
-	local template = glovesFolder:FindFirstChild(gloveName)
+local function getGloveTemplate(gloveName: string, gloveFolder: Folder): Tool?
+	gloveFolder = gloveFolder or glovesFolder
+	local template = gloveFolder:FindFirstChild(gloveName)
 	if template and template:IsA("Tool") then
 		return template
 	end
@@ -164,6 +197,7 @@ local function removeMatchBananaPoints(folder: Folder, amount: number)
 
 		local removed = math.min(points, remaining)
 		local newValue = points - removed
+		remaining -= removed
 
 		if newValue > 0 then
 			entry.Value = tostring(newValue)
@@ -225,10 +259,224 @@ local function findClosestTarget(state: PlayerState): (Player?, BasePart?)
 	return closestPlayer, closestRoot
 end
 
-local function hitClosestTarget(state: PlayerState)
+local function getHitVfxPosition(character: Model, rootPart: BasePart): Vector3
+	local head = character:FindFirstChild("Head", true)
+	if head and head:IsA("BasePart") then
+		return head.Position + Vector3.yAxis * (head.Size.Y / 2 + HIT_VFX_HEIGHT)
+	end
+
+	return rootPart.Position + Vector3.yAxis * HIT_VFX_HEIGHT
+end
+
+local function preparePart(part: BasePart)
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CanTouch = false
+end
+
+local function playHitVfx(position: Vector3)
+	local template = vfxFolder and vfxFolder:FindFirstChild(HIT_VFX_NAME)
+	if not template or (not template:IsA("Model") and not template:IsA("BasePart")) then
+		return
+	end
+
+	if template:IsA("BasePart") then
+		local vfx = template:Clone()
+		preparePart(vfx)
+		vfx.CFrame = CFrame.new(position) * vfx.CFrame.Rotation
+		vfx.Parent = workspace
+		debris:AddItem(vfx, HIT_VFX_LIFETIME)
+		return
+	end
+
+	if template:IsA("Model") then
+		local vfx = template:Clone()
+		for _, descendant in ipairs(vfx:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				preparePart(descendant)
+			end
+		end
+		vfx:PivotTo(CFrame.new(position) * vfx:GetPivot().Rotation)
+		vfx.Parent = workspace
+		debris:AddItem(vfx, HIT_VFX_LIFETIME)
+	end
+end
+
+local function prepareAttachedPart(part: BasePart)
+	part.Anchored = false
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CanTouch = false
+	part.Massless = true
+end
+
+local function weldToPart(part: BasePart, attachmentPart: BasePart)
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = attachmentPart
+	weld.Part1 = part
+	weld.Parent = part
+end
+
+local function attachIFrameVfx(character: Model, attachmentPart: BasePart)
+	local template = vfxFolder and vfxFolder:FindFirstChild(IFRAME_VFX_NAME)
+	if not template then
+		return
+	end
+
+	local previousVfx = character:FindFirstChild(IFRAME_VFX_NAME)
+	if previousVfx then
+		previousVfx:Destroy()
+	end
+
+	local vfx = template:Clone()
+	vfx.Name = IFRAME_VFX_NAME
+
+	if vfx:IsA("Attachment") then
+		vfx.CFrame = CFrame.identity
+		vfx.Parent = attachmentPart
+	elseif vfx:IsA("BasePart") then
+		prepareAttachedPart(vfx)
+		vfx.CFrame = attachmentPart.CFrame * vfx.CFrame.Rotation
+		vfx.Parent = character
+		weldToPart(vfx, attachmentPart)
+	elseif vfx:IsA("Model") then
+		vfx.Parent = character
+		vfx:PivotTo(attachmentPart.CFrame * vfx:GetPivot().Rotation)
+		for _, descendant in ipairs(vfx:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				prepareAttachedPart(descendant)
+				weldToPart(descendant, attachmentPart)
+			elseif descendant:IsA("Highlight") then
+				descendant.Adornee = character
+			end
+		end
+	else
+		vfx.Parent = attachmentPart
+	end
+
+	debris:AddItem(vfx, RECOVERY_IFRAME_DURATION)
+end
+
+local function playCombatSound(soundName: string, position: Vector3)
+	if not soundsFolder then
+		return
+	end
+
+	local soundData = soundUtils.getNamedData(soundsFolder, soundName)
+	if soundData then
+		matchEvent:FireAllClients({
+			action = "PlaySpatialSound",
+			sound = soundData,
+			position = position,
+		})
+	end
+end
+
+local function applyKnockback(attackerRoot: BasePart, character: Model, targetRoot: BasePart)
+	local direction = targetRoot.Position - attackerRoot.Position
+	direction = Vector3.new(direction.X, 0, direction.Z)
+	if direction.Magnitude <= 0 then
+		direction = attackerRoot.CFrame.LookVector
+		direction = Vector3.new(direction.X, 0, direction.Z)
+	end
+	if direction.Magnitude <= 0 then
+		return
+	end
+
+	if targetRoot:CanSetNetworkOwnership() then
+		targetRoot:SetNetworkOwner(nil)
+	end
+
+	local velocityChange = direction.Unit * KNOCKBACK_HORIZONTAL_SPEED + Vector3.yAxis * KNOCKBACK_UPWARD_SPEED
+	local movedAssemblies: { [BasePart]: boolean } = {}
+	for _, descendant in ipairs(character:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			local assemblyRoot = descendant.AssemblyRootPart
+			if not movedAssemblies[assemblyRoot] then
+				movedAssemblies[assemblyRoot] = true
+				assemblyRoot:ApplyImpulse(velocityChange * assemblyRoot.AssemblyMass)
+			end
+		end
+	end
+
+	local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+	if torso and torso:IsA("BasePart") then
+		local tiltImpulse = direction.Unit * KNOCKBACK_TILT_SPEED * torso.AssemblyMass
+		local impulsePosition = torso.AssemblyCenterOfMass + Vector3.yAxis * (torso.Size.Y * 0.4)
+		torso:ApplyImpulseAtPosition(tiltImpulse, impulsePosition)
+	end
+
+	task.delay(SERVER_OWNERSHIP_DURATION, function()
+		if targetRoot.Parent and targetRoot:CanSetNetworkOwnership() then
+			targetRoot:SetNetworkOwnershipAuto()
+		end
+	end)
+end
+
+local function stunTarget(attackerState: PlayerState, targetPlayer: Player, targetRoot: BasePart): StunResult
+	local character = targetPlayer.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not character or not humanoid or humanoid.Health <= 0 then
+		return "Invalid"
+	end
+
+	local now = os.clock()
+	local previousTargetState = targetStates[targetPlayer]
+	if previousTargetState
+		and previousTargetState.character == character
+		and now < previousTargetState.invulnerableUntil
+	then
+		playCombatSound(soundUtils.Names.SlapBlocked, targetRoot.Position)
+		return "Blocked"
+	end
+
+	if not ragdollUtils.enable(humanoid, GLOVE_MOTOR_NAMES) then
+		return "Invalid"
+	end
+
+	local recoveryId = 1
+	if previousTargetState and previousTargetState.character == character then
+		recoveryId = previousTargetState.recoveryId + 1
+	end
+	local targetState: TargetState = {
+		character = character,
+		recoveryId = recoveryId,
+		invulnerableUntil = math.huge,
+	}
+	targetStates[targetPlayer] = targetState
+
+	local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+	local vfxParent = if torso and torso:IsA("BasePart") then torso else targetRoot
+	attachIFrameVfx(character, vfxParent)
+	applyKnockback(attackerState.rootPart, character, targetRoot)
+	playHitVfx(getHitVfxPosition(character, targetRoot))
+	playCombatSound(soundUtils.Names.SlapHit, targetRoot.Position)
+
+	task.delay(RAGDOLL_DURATION, function()
+		local currentState = targetStates[targetPlayer]
+		if not currentState or currentState ~= targetState or currentState.recoveryId ~= recoveryId then
+			return
+		end
+
+		ragdollUtils.disable(humanoid)
+		currentState.invulnerableUntil = os.clock() + RECOVERY_IFRAME_DURATION
+	end)
+
+	return "Hit"
+end
+
+local function hitClosestTarget(player: Player, state: PlayerState)
 	local targetPlayer, targetRoot = findClosestTarget(state)
 	if not targetPlayer or not targetRoot then
 		return
+	end
+	local dropPosition = targetRoot.Position
+	if stunTarget(state, targetPlayer, targetRoot) ~= "Hit" then
+		return
+	end
+	if matchService.isActivePlayer(player) then
+		progressService.award(player, "LandingPunches")
 	end
 
 	local matchBananas = targetPlayer:FindFirstChild(MATCH_BANANAS_FOLDER)
@@ -241,7 +489,7 @@ local function hitClosestTarget(state: PlayerState)
 		return
 	end
 
-	local spawned = bananasSpawner.spawnDroppedBananas(targetRoot.Position, amountToDrop, targetPlayer)
+	local spawned = bananasSpawner.spawnDroppedBananas(dropPosition, amountToDrop, targetPlayer)
 	if spawned > 0 then
 		removeMatchBananaPoints(matchBananas, spawned)
 	end
@@ -401,6 +649,7 @@ local function startPunch(player: Player)
 	local animationTrack = state.animationTrack
 	if not humanoid
 		or humanoid.Health <= 0
+		or humanoid.PlatformStand
 		or not state.restMotor
 		or not state.attackMotor
 		or not state.handle
@@ -418,7 +667,8 @@ local function startPunch(player: Player)
 	state.attackId += 1
 	local attackId = state.attackId
 	mountGlove(state, "Attacking")
-	hitClosestTarget(state)
+	playCombatSound(soundUtils.Names.SlapSwing, state.rootPart.Position)
+	hitClosestTarget(player, state)
 
 	animationTrack.Stopped:Once(function()
 		finishPunch(player, state, attackId)
@@ -526,6 +776,7 @@ function combatService.init()
 	players.PlayerRemoving:Connect(function(player)
 		playerStates[player] = nil
 		lastPunchTimes[player] = nil
+		targetStates[player] = nil
 	end)
 end
 

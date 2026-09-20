@@ -1,20 +1,19 @@
---!strict
-
 local collectionService = game:GetService("CollectionService")
-local debris = game:GetService("Debris")
 local players = game:GetService("Players")
 local replicatedStorage = game:GetService("ReplicatedStorage")
 local runService = game:GetService("RunService")
 local serverStorage = game:GetService("ServerStorage")
-local soundService = game:GetService("SoundService")
 local workspace = game:GetService("Workspace")
 
 local bananaConfig = require(script.Parent.Parent.Configs.BananaConfig)
 local bananasSpawner = require(script.Parent.Parent.Utils.BananasSpawner)
+local progressService = require(script.Parent.ProgressService)
 
 local soundsFolder = serverStorage:WaitForChild("Sounds")
 local bananaCollectSounds = soundsFolder:WaitForChild("BananaCollect")
 local sharedFolder = replicatedStorage:WaitForChild("Shared")
+local sharedUtilsFolder = sharedFolder:FindFirstChild("Utils") :: Folder
+local soundUtils = require(sharedUtilsFolder:FindFirstChild("SoundUtils") :: ModuleScript)
 local eventsFolder = sharedFolder:WaitForChild("Events")
 local matchEvent = eventsFolder:WaitForChild("MatchEvent") :: RemoteEvent
 
@@ -47,6 +46,12 @@ type BananaState = {
 	bananaType: string?,
 	falling: boolean,
 	raycastParams: RaycastParams?,
+}
+
+type SoundData = {
+	soundId: string,
+	volume: number,
+	playbackSpeed: number,
 }
 
 local collectionSounds: { [string]: Sound } = {}
@@ -88,20 +93,17 @@ local function getBananaType(banana: Model): string?
 	return nil
 end
 
-local function playCollectionSound(bananaType: string?)
+local function getCollectionSound(bananaType: string?): SoundData?
 	if not bananaType then
-		return
+		return nil
 	end
 
 	local template = collectionSounds[bananaType]
 	if not template then
-		return
+		return nil
 	end
 
-	local sound = template:Clone()
-	sound.Parent = soundService
-	sound:Play()
-	debris:AddItem(sound, math.max(sound.TimeLength + 1, 5))
+	return soundUtils.getNamedData(bananaCollectSounds, template.Name)
 end
 
 local function collectBanana(banana: Model, state: BananaState, player: Player)
@@ -126,8 +128,9 @@ local function collectBanana(banana: Model, state: BananaState, player: Player)
 	collectedBanana.Name = banana.Name
 	collectedBanana.Value = tostring(state.points)
 	collectedBanana.Parent = matchBananas
+	progressService.award(player, "CollectingBananas", state.points)
 
-	playCollectionSound(state.bananaType)
+	local collectionSound = getCollectionSound(state.bananaType)
 	collectionService:RemoveTag(banana, BANANA_TAG)
 
 	matchEvent:FireAllClients({
@@ -137,6 +140,7 @@ local function collectBanana(banana: Model, state: BananaState, player: Player)
 		pos = banana:GetPivot().Position,
 		points = state.points,
 		duration = COLLECTION_ANIMATION_DURATION,
+		sound = collectionSound,
 	})
 
 	task.delay(COLLECTION_DESTROY_DELAY, function()
@@ -164,12 +168,19 @@ local function stopCrateFall(banana: Model, state: BananaState, groundPosition: 
 
 	state.rootPart.AssemblyLinearVelocity = Vector3.zero
 	state.rootPart.AssemblyAngularVelocity = Vector3.zero
+	local droppedRotation = bananasSpawner.getDroppedBananaRotation(banana)
+	if droppedRotation then
+		banana:PivotTo(CFrame.new(banana:GetPivot().Position) * droppedRotation)
+	end
 
 	local boundingCFrame, boundingSize = banana:GetBoundingBox()
 	local groundedY = groundPosition.Y + boundingSize.Y / 2
 	banana:PivotTo(banana:GetPivot() + Vector3.new(0, groundedY - boundingCFrame.Position.Y, 0))
 
 	state.rootPart.Anchored = true
+	if banana:GetAttribute(DROPPED_BANANA_ATTRIBUTE) == true then
+		banana:SetAttribute("Rotates", true)
+	end
 end
 
 local function checkCrateGround(banana: Model, state: BananaState)

@@ -1,5 +1,3 @@
---!strict
-
 local tweenService = game:GetService("TweenService")
 local players = game:GetService("Players")
 

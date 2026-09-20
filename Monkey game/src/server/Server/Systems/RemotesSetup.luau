@@ -1,5 +1,3 @@
---!strict
-
 local replicatedStorage = game:GetService("ReplicatedStorage")
 
 local remotesConfig = require(script.Parent.Parent.Configs.RemotesConfig)

@@ -2,7 +2,6 @@
 
 local collectionService = game:GetService("CollectionService")
 local replicatedStorage = game:GetService("ReplicatedStorage")
-local runService = game:GetService("RunService")
 local serverStorage = game:GetService("ServerStorage")
 local workspace = game:GetService("Workspace")
 
@@ -33,15 +32,16 @@ local PARACHUTE_FALL_SPEED = 5
 local PARACHUTE_ROTATION_SPEED = math.rad(5)
 local MINIMUM_GROUND_NORMAL_Y = 0.7
 local MINIMUM_AIRDROP_DISTANCE = 10
-local DROP_LIFETIME = 6
+local DROP_LIFETIME = 10
 local DROP_BLINKS = 3
 local DROP_BLINK_INTERVAL = 0.15
 local DROP_COLLECT_DELAY = 0.6
-local DROP_SPAWN_RADIUS = 2
-local DROP_SPAWN_HEIGHT = 1
-local DROP_HORIZONTAL_SPEED = 14
-local DROP_UPWARD_SPEED = 28
-local DROP_SPAWN_BATCH_SIZE = 5
+local DROP_SPAWN_RADIUS = 5
+local DROP_SPAWN_HEIGHT = 3
+local DROP_HORIZONTAL_SPEED = 12
+local DROP_UPWARD_SPEED = 15
+local DROP_SPAWN_INTERVAL = 0.01
+local MAX_DROPPED_BANANA_MODELS = 8
 local AIRDROP_VFX = vfxFolder:FindFirstChild("AirdropVFX")
 
 local CRATE_LIMITS: { [string]: number } = {
@@ -69,11 +69,13 @@ type BananaSpawner = {
 	spawnBananasInMap: (map: Model, matchDuration: number) -> (),
 	spawnDroppedBananas: (position: Vector3, amount: number, targetPlayer: Player) -> number,
 	canCollectDroppedBanana: (banana: Model, player: Player) -> boolean,
+	getDroppedBananaRotation: (banana: Model) -> CFrame?,
 }
 
 local RNG = Random.new()
 local bananaTemplates: { [string]: { Model } } = {}
 local droppedBananaOwners: { [Model]: Player } = setmetatable({}, { __mode = "k" }) :: any
+local droppedBananaRotations: { [Model]: CFrame } = setmetatable({}, { __mode = "k" }) :: any
 local activeContext: SpawnContext? = nil
 local bananaSpawner: BananaSpawner = {} :: BananaSpawner
 
@@ -161,7 +163,7 @@ local function setDroppedBananasVisible(bananas: { Model }, visible: boolean)
 		end
 
 		for _, descendant in ipairs(banana:GetDescendants()) do
-			if descendant:IsA("BasePart") then
+			if descendant:IsA("BasePart") and descendant.Name ~= "Part" then
 				descendant.Transparency = if visible then 0 else 1
 			end
 		end
@@ -482,14 +484,21 @@ function bananaSpawner.canCollectDroppedBanana(banana: Model, player: Player): b
 	return droppedBananaOwners[banana] ~= player
 end
 
+function bananaSpawner.getDroppedBananaRotation(banana: Model): CFrame?
+	return droppedBananaRotations[banana]
+end
+
 function bananaSpawner.spawnDroppedBananas(position: Vector3, amount: number, targetPlayer: Player): number
 	local context = activeContext
 	local templates = bananaTemplates[NORMAL_BANANA_TAG]
-	if amount <= 0 or not context or not context.container.Parent or not templates or #templates == 0 then
+	local totalPoints = math.floor(amount)
+	if totalPoints <= 0 or not context or not context.container.Parent or not templates or #templates == 0 then
 		return 0
 	end
 
-	local spawnAmount = math.floor(amount)
+	local spawnAmount = math.min(totalPoints, MAX_DROPPED_BANANA_MODELS)
+	local pointsPerBanana = math.floor(totalPoints / spawnAmount)
+	local remainder = totalPoints % spawnAmount
 	local angleOffset = RNG:NextNumber(0, math.pi * 2)
 
 	task.spawn(function()
@@ -516,15 +525,23 @@ function bananaSpawner.spawnDroppedBananas(position: Vector3, amount: number, ta
 			local spawnPosition = position
 				+ direction * DROP_SPAWN_RADIUS
 				+ Vector3.yAxis * DROP_SPAWN_HEIGHT
+			local boundingCFrame = banana:GetBoundingBox()
+			local pivotToBounds = banana:GetPivot():ToObjectSpace(boundingCFrame)
+			local spawnPivot = CFrame.new(spawnPosition)
+				* CFrame.Angles(0, RNG:NextNumber(0, math.pi * 2), 0)
+				* pivotToBounds:Inverse()
+			local uprightRotation = spawnPivot.Rotation
+			local points = pointsPerBanana + (if index <= remainder then 1 else 0)
 
-			banana:PivotTo(CFrame.new(spawnPosition) * banana:GetPivot().Rotation)
+			banana:PivotTo(spawnPivot)
 			banana:SetAttribute(BANANA_TYPE_ATTRIBUTE, NORMAL_BANANA_TAG)
 			banana:SetAttribute(DROPPED_BANANA_ATTRIBUTE, true)
 			banana:SetAttribute("Collectable", false)
-			banana:SetAttribute("Points", 1)
+			banana:SetAttribute("Points", points)
 			banana:SetAttribute("Rotates", false)
 			banana.Parent = context.container
 			droppedBananaOwners[banana] = targetPlayer
+			droppedBananaRotations[banana] = uprightRotation
 			collectionService:AddTag(banana, BANANA_TAG)
 
 			if rootPart:CanSetNetworkOwnership() then
@@ -541,8 +558,8 @@ function bananaSpawner.spawnDroppedBananas(position: Vector3, amount: number, ta
 			end)
 
 			table.insert(droppedBananas, banana)
-			if index % DROP_SPAWN_BATCH_SIZE == 0 then
-				runService.Heartbeat:Wait()
+			if index < spawnAmount then
+				task.wait(DROP_SPAWN_INTERVAL)
 			end
 		end
 
@@ -551,7 +568,7 @@ function bananaSpawner.spawnDroppedBananas(position: Vector3, amount: number, ta
 		end
 	end)
 
-	return spawnAmount
+	return totalPoints
 end
 
 bananaTemplates = cacheTemplates()

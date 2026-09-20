@@ -1,5 +1,3 @@
---!strict
-
 local players = game:GetService("Players")
 
 local STATS: { [string]: number } = {

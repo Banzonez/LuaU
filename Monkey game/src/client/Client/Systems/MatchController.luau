@@ -1,13 +1,21 @@
---!strict
-
 local replicatedStorage = game:GetService("ReplicatedStorage")
 local players = game:GetService("Players")
 local tweenService = game:GetService("TweenService")
 
 local shared = replicatedStorage:WaitForChild("Shared")
 local matchEvent: RemoteEvent = shared:WaitForChild("Events"):WaitForChild("MatchEvent")
+local soundUtils = require(shared:WaitForChild("Utils"):WaitForChild("SoundUtils"))
+
+type SoundData = {
+	soundId: string,
+	volume: number,
+	playbackSpeed: number,
+}
 
 type MatchEventData = {
+	action: string?,
+	sound: SoundData?,
+	position: Vector3?,
 	phase: string?,
 	seconds: number?,
 	map: Model?,
@@ -56,6 +64,15 @@ matchController.init = function()
 	matchGui.Enabled = true
 
 	matchEvent.OnClientEvent:Connect(function(data: MatchEventData)
+		if data.action == "PlaySound" and data.sound then
+			soundUtils.playData(data.sound)
+			return
+		end
+		if data.action == "PlaySpatialSound" and data.sound and data.position then
+			soundUtils.playSpatialData(data.sound, data.position)
+			return
+		end
+
 		local phase = data.phase
 		local seconds = data.seconds
 		local _map = data.map
