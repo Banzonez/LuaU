@@ -5,8 +5,8 @@ local workspace = game:GetService("Workspace")
 
 local RAGDOLL_FOLDER_NAME = "CombatRagdoll"
 local RAGDOLL_COLLISION_GROUP = "CombatRagdoll"
-local SUPPORT_COLLIDER_SCALE = Vector3.new(0.7, 0.55, 0.7)
-local MIN_SUPPORT_COLLIDER_SIZE = 0.5
+local GROUND_CHECK_DISTANCE = 20
+local GROUND_CLEARANCE = 0.1
 local RECOVERY_RAYCAST_HEIGHT = 4
 local RECOVERY_RAYCAST_DISTANCE = 50
 local RECOVERY_CLEARANCE = 0.1
@@ -34,7 +34,6 @@ type RagdollData = {
 	attachments: { Attachment },
 	bodyParts: { [BasePart]: boolean },
 	bodyPartCollisionGroups: { [BasePart]: string },
-	supportCollider: BasePart?,
 	networkRoots: { BasePart },
 	autoRotate: boolean,
 	platformStand: boolean,
@@ -109,32 +108,31 @@ local function isExcludedRagdollPart(part: BasePart): boolean
 		or (parent ~= nil and EXCLUDED_RAGDOLL_PART_NAMES[parent.Name] == true)
 end
 
-local function getJointName(motor: Motor6D, part1: BasePart): string
-	return string.lower(motor.Name .. " " .. part1.Name)
+local function getJointName(motor: Motor6D): string
+	return string.lower(motor.Name)
 end
 
-local function usesHingeConstraint(motor: Motor6D, part1: BasePart): boolean
-	local jointName = getJointName(motor, part1)
+local function usesHingeConstraint(motor: Motor6D): boolean
+	local jointName = getJointName(motor)
 	return containsJointKeyword(jointName, "ankle") or containsJointKeyword(jointName, "foot")
 end
 
-local function getBallSocketProfile(motor: Motor6D, part1: BasePart): BallSocketProfile
-	local jointName = getJointName(motor, part1)
+local function getBallSocketProfile(motor: Motor6D): BallSocketProfile
+	local jointName = getJointName(motor)
 
 	if
 		containsJointKeyword(jointName, "root")
 		or containsJointKeyword(jointName, "waist")
-		or containsJointKeyword(jointName, "torso")
 	then
 		return BALL_SOCKET_PROFILES.root
 	end
-	if containsJointKeyword(jointName, "neck") or containsJointKeyword(jointName, "head") then
+	if containsJointKeyword(jointName, "neck") then
 		return BALL_SOCKET_PROFILES.neck
 	end
-	if containsJointKeyword(jointName, "shoulder") or containsJointKeyword(jointName, "arm") then
+	if containsJointKeyword(jointName, "shoulder") then
 		return BALL_SOCKET_PROFILES.shoulder
 	end
-	if containsJointKeyword(jointName, "hip") or containsJointKeyword(jointName, "leg") then
+	if containsJointKeyword(jointName, "hip") then
 		return BALL_SOCKET_PROFILES.hip
 	end
 
@@ -144,11 +142,10 @@ end
 local function createConstraint(
 	folder: Folder,
 	motor: Motor6D,
-	part1: BasePart,
 	attachment0: Attachment,
 	attachment1: Attachment
 ): JointConstraint
-	if usesHingeConstraint(motor, part1) then
+	if usesHingeConstraint(motor) then
 		local hinge = Instance.new("HingeConstraint")
 		hinge.Name = motor.Name .. "RagdollHinge"
 		hinge.Attachment0 = attachment0
@@ -162,7 +159,7 @@ local function createConstraint(
 		return hinge
 	end
 
-	local profile = getBallSocketProfile(motor, part1)
+	local profile = getBallSocketProfile(motor)
 	local socket = Instance.new("BallSocketConstraint")
 	socket.Name = motor.Name .. "RagdollSocket"
 	socket.Attachment0 = attachment0
@@ -194,65 +191,9 @@ local function createJoint(folder: Folder, motor: Motor6D, part0: BasePart, part
 		motor = motor,
 		attachment0 = attachment0,
 		attachment1 = attachment1,
-		constraint = createConstraint(folder, motor, part1, attachment0, attachment1),
+		constraint = createConstraint(folder, motor, attachment0, attachment1),
 		wasEnabled = true,
 	}
-end
-
-local function getPhysicalPart(instance: Instance?): BasePart?
-	if not instance then
-		return nil
-	end
-	if instance:IsA("BasePart") then
-		return instance
-	end
-	if instance:IsA("Model") then
-		return instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart", true)
-	end
-
-	return nil
-end
-
-local function findSupportPart(character: Model, rootPart: BasePart?): BasePart?
-	for _, partName in ipairs({ "UpperTorso", "Torso", "LowerTorso" }) do
-		local supportPart = getPhysicalPart(character:FindFirstChild(partName))
-		if supportPart then
-			return supportPart
-		end
-	end
-
-	return rootPart
-end
-
-local function createSupportCollider(folder: Folder, supportPart: BasePart?): BasePart?
-	if not supportPart then
-		return nil
-	end
-
-	local collider = Instance.new("Part")
-	collider.Name = "RagdollSupportCollider"
-	collider.Size = Vector3.new(
-		math.max(supportPart.Size.X * SUPPORT_COLLIDER_SCALE.X, MIN_SUPPORT_COLLIDER_SIZE),
-		math.max(supportPart.Size.Y * SUPPORT_COLLIDER_SCALE.Y, MIN_SUPPORT_COLLIDER_SIZE),
-		math.max(supportPart.Size.Z * SUPPORT_COLLIDER_SCALE.Z, MIN_SUPPORT_COLLIDER_SIZE)
-	)
-	collider.CFrame = supportPart.CFrame
-	collider.Transparency = 1
-	collider.Anchored = false
-	collider.Massless = true
-	collider.CanCollide = false
-	collider.CanQuery = false
-	collider.CanTouch = false
-	collider.CollisionGroup = RAGDOLL_COLLISION_GROUP
-	collider.CustomPhysicalProperties = PhysicalProperties.new(0.7, 0.25, 0, 1, 1)
-	collider.Parent = folder
-
-	local weld = Instance.new("WeldConstraint")
-	weld.Part0 = supportPart
-	weld.Part1 = collider
-	weld.Parent = collider
-
-	return collider
 end
 
 local function destroyRagdollData(data: RagdollData)
@@ -285,9 +226,6 @@ local function prepareRagdoll(
 	local attachments: { Attachment } = {}
 	local bodyParts: { [BasePart]: boolean } = {}
 	local bodyPartCollisionGroups: { [BasePart]: string } = {}
-	local rootInstance = character:FindFirstChild("HumanoidRootPart")
-	local rootPart = if rootInstance and rootInstance:IsA("BasePart") then rootInstance else nil
-
 	for _, descendant in ipairs(character:GetDescendants()) do
 		if descendant:IsA("BasePart") then
 			bodyParts[descendant] = descendant.CanCollide
@@ -316,7 +254,6 @@ local function prepareRagdoll(
 		attachments = attachments,
 		bodyParts = bodyParts,
 		bodyPartCollisionGroups = bodyPartCollisionGroups,
-		supportCollider = createSupportCollider(folder, findSupportPart(character, rootPart)),
 		networkRoots = {},
 		autoRotate = humanoid.AutoRotate,
 		platformStand = humanoid.PlatformStand,
@@ -349,6 +286,28 @@ local function stopAssemblies(data: RagdollData)
 			assemblyRoot.AssemblyLinearVelocity = Vector3.zero
 			assemblyRoot.AssemblyAngularVelocity = Vector3.zero
 		end
+	end
+end
+
+local function liftCharacterAboveGround(data: RagdollData, humanoid: Humanoid)
+	local rootPart = data.character:FindFirstChild("HumanoidRootPart")
+	if not rootPart or not rootPart:IsA("BasePart") then
+		return
+	end
+
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	raycastParams.FilterDescendantsInstances = { data.character }
+	local rayResult = workspace:Raycast(rootPart.Position, -Vector3.yAxis * GROUND_CHECK_DISTANCE, raycastParams)
+	if not rayResult then
+		return
+	end
+
+	local expectedHeight = humanoid.HipHeight + rootPart.Size.Y / 2
+	local actualHeight = rootPart.Position.Y - rayResult.Position.Y
+	local liftAmount = expectedHeight - actualHeight + GROUND_CLEARANCE
+	if liftAmount > 0 then
+		data.character:PivotTo(data.character:GetPivot() + Vector3.yAxis * liftAmount)
 	end
 end
 
@@ -446,6 +405,8 @@ function ragdollUtils.enable(humanoid: Humanoid, excludedMotorNames: { [string]:
 	humanoid.AutoRotate = false
 	humanoid.PlatformStand = true
 	humanoid:SetStateEnabled(Enum.HumanoidStateType.GettingUp, false)
+	stopAssemblies(data)
+	liftCharacterAboveGround(data, humanoid)
 
 	for part in pairs(data.bodyParts) do
 		if part.Parent then
@@ -455,10 +416,6 @@ function ragdollUtils.enable(humanoid: Humanoid, excludedMotorNames: { [string]:
 			part.CanCollide = true
 		end
 	end
-	if data.supportCollider then
-		data.supportCollider.CanCollide = false
-	end
-
 	local enabledJointCount = 0
 	for _, joint in ipairs(data.joints) do
 		local motor = joint.motor
@@ -467,7 +424,7 @@ function ragdollUtils.enable(humanoid: Humanoid, excludedMotorNames: { [string]:
 		end
 
 		joint.wasEnabled = motor.Enabled
-		joint.attachment0.CFrame = motor.C0 * motor.Transform
+		joint.attachment0.CFrame = motor.C0
 		joint.attachment1.CFrame = motor.C1
 		joint.constraint.Enabled = motor.Enabled
 		motor.Enabled = false
@@ -483,7 +440,6 @@ function ragdollUtils.enable(humanoid: Humanoid, excludedMotorNames: { [string]:
 
 	stopAssemblies(data)
 	giveServerOwnership(data)
-	humanoid:ChangeState(Enum.HumanoidStateType.Physics)
 	return true
 end
 
@@ -540,8 +496,8 @@ function ragdollUtils.disable(humanoid: Humanoid)
 		humanoid.AutoRotate = data.autoRotate
 		humanoid.PlatformStand = data.platformStand
 		humanoid:SetStateEnabled(Enum.HumanoidStateType.GettingUp, data.gettingUpEnabled)
-		if data.gettingUpEnabled and humanoid.Health > 0 then
-			humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+		if humanoid.Health > 0 then
+			humanoid:ChangeState(Enum.HumanoidStateType.Landed)
 		end
 	end
 end

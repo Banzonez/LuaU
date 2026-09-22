@@ -21,11 +21,14 @@ local crownTemplate = assetsFolder:FindFirstChild("Crown") :: Accessory
 
 local intermissionModel = workspace:FindFirstChild("Lobby") :: Model
 
-local INTERMISSION_DURATION = 5 -- 30
-local MATCH_DURATION = 5 * 2 -- 5 minutes
+local INTERMISSION_DURATION = 10 -- 30
+local MATCH_DURATION = 5 * 60 -- 5 minutes
 local MATCH_START_COUNTDOWN = 3
 local RESPAWN_IN_MATCH = true -- Set to false to leave match respawning to your game.
-local CHARACTER_ASSURANCE = 0.1
+local CHARACTER_GROUND_CLEARANCE = 0.1
+local SPAWN_GROUND_RAY_HEIGHT = 4
+local SPAWN_GROUND_RAY_DISTANCE = 12
+local MINIMUM_SPAWN_GROUND_NORMAL_Y = 0.5
 local MAP_CFRAME = CFrame.new(Vector3.new(50, 300, 0))
 local BANANAS_COLLECTABLE_ATTRIBUTE = "BananasCollectable"
 local MATCH_START_TIME_ATTRIBUTE = "BananasMatchStartedAt"
@@ -41,7 +44,7 @@ local participatingPlayers: { [Player]: boolean } = {}
 local matchLeader: Player?
 local matchService = {}
 
-local function getSpawnCFrame(model: Model): CFrame
+local function getSpawnCFrame(model: Model): (CFrame, BasePart?)
 	local spawns = model:FindFirstChild("Spawns")
 	if spawns then
 		local validSpawns: { BasePart } = {}
@@ -53,16 +56,67 @@ local function getSpawnCFrame(model: Model): CFrame
 		end
 
 		if #validSpawns > 0 then
-			return validSpawns[math.random(1, #validSpawns)].CFrame
+			local selectedSpawn = validSpawns[math.random(1, #validSpawns)]
+			return selectedSpawn.CFrame, selectedSpawn
 		end
 	end
 
 	local spawn = model:FindFirstChild("Spawn")
 	if spawn and spawn:IsA("BasePart") then
-		return spawn.CFrame
+		return spawn.CFrame, spawn
 	end
 
-	return model:GetPivot()
+	return model:GetPivot(), nil
+end
+
+local function getCharacterStandingHeight(character: Model, humanoid: Humanoid, rootPart: BasePart): number
+	local standingHeight = humanoid.HipHeight + rootPart.Size.Y / 2
+	if humanoid.RigType == Enum.HumanoidRigType.R6 then
+		local leftLeg = character:FindFirstChild("Left Leg")
+		if leftLeg and leftLeg:IsA("BasePart") then
+			standingHeight += leftLeg.Size.Y
+		end
+	end
+
+	return standingHeight
+end
+
+local function getSpawnGroundY(
+	character: Model,
+	model: Model,
+	spawnCFrame: CFrame,
+	spawnPart: BasePart?
+): number
+	local excludedInstances: { Instance } = { character }
+	local spawns = model:FindFirstChild("Spawns")
+	if spawns then
+		table.insert(excludedInstances, spawns)
+	end
+	if spawnPart and (not spawns or not spawnPart:IsDescendantOf(spawns)) then
+		table.insert(excludedInstances, spawnPart)
+	end
+
+	for _, player in ipairs(players:GetPlayers()) do
+		local otherCharacter = player.Character
+		if otherCharacter and otherCharacter ~= character then
+			table.insert(excludedInstances, otherCharacter)
+		end
+	end
+
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	raycastParams.FilterDescendantsInstances = excludedInstances
+	raycastParams.IgnoreWater = true
+	raycastParams.RespectCanCollide = true
+
+	local rayOrigin = spawnCFrame.Position + Vector3.yAxis * SPAWN_GROUND_RAY_HEIGHT
+	local rayDirection = -Vector3.yAxis * SPAWN_GROUND_RAY_DISTANCE
+	local rayResult = workspace:Raycast(rayOrigin, rayDirection, raycastParams)
+	if rayResult and rayResult.Normal.Y >= MINIMUM_SPAWN_GROUND_NORMAL_Y then
+		return rayResult.Position.Y
+	end
+
+	return spawnCFrame.Position.Y
 end
 
 local function moveCharacterToModel(player: Player, model: Model)
@@ -79,7 +133,7 @@ local function moveCharacterToModel(player: Player, model: Model)
 		return
 	end
 
-	local spawnCFrame = getSpawnCFrame(model)
+	local spawnCFrame, spawnPart = getSpawnCFrame(model)
 
 	-- Keep the character upright even if a spawn part or model pivot is rotated.
 	local lookVector = Vector3.new(spawnCFrame.LookVector.X, 0, spawnCFrame.LookVector.Z)
@@ -90,8 +144,13 @@ local function moveCharacterToModel(player: Player, model: Model)
 		lookVector = lookVector.Unit
 	end
 
-	local position = spawnCFrame.Position
-		+ Vector3.yAxis * (humanoid.HipHeight + rootPart.Size.Y / 2 + CHARACTER_ASSURANCE)
+	local groundY = getSpawnGroundY(character, model, spawnCFrame, spawnPart)
+	local standingHeight = getCharacterStandingHeight(character, humanoid, rootPart)
+	local position = Vector3.new(
+		spawnCFrame.Position.X,
+		groundY + standingHeight + CHARACTER_GROUND_CLEARANCE,
+		spawnCFrame.Position.Z
+	)
 
 	rootPart.CFrame = CFrame.lookAt(position, position + lookVector)
 	rootPart.AssemblyLinearVelocity = Vector3.zero
@@ -104,6 +163,18 @@ local function movePlayersToModel(playersToMove: { Player }, model: Model)
 			moveCharacterToModel(player, model)
 		end
 	end
+end
+
+local function getParticipatingPlayers(): { Player }
+	local currentParticipants: { Player } = {}
+
+	for player in pairs(participatingPlayers) do
+		if player.Parent == players then
+			table.insert(currentParticipants, player)
+		end
+	end
+
+	return currentParticipants
 end
 
 local function prepareMatchBananas(player: Player)
@@ -319,6 +390,29 @@ local function sendSound(player: Player, soundName: string)
 	})
 end
 
+local function enrollPlayerInMatch(player: Player): boolean
+	local selectedMap = activeMap
+	if
+		participatingPlayers[player]
+		or player.Parent ~= players
+		or not selectedMap
+		or (phase ~= "MatchStarting" and phase ~= "Match")
+	then
+		return false
+	end
+
+	participatingPlayers[player] = true
+	progressService.beginMatch(player)
+	prepareMatchBananas(player)
+
+	if player.Character then
+		task.defer(moveCharacterToModel, player, selectedMap)
+	end
+
+	sendSound(player, soundUtils.names.teleportToMatch)
+	return true
+end
+
 local colorCorrection = Instance.new("ColorCorrectionEffect")
 colorCorrection.TintColor = Color3.fromRGB(0, 0, 0)
 colorCorrection.Enabled = false
@@ -331,11 +425,16 @@ local function colorCorrectionEffect(duration: number)
 		return
 	end
 
-	colorCorrection.Enabled = true
 	colorCorrection.TintColor = Color3.fromRGB(0, 0, 0)
+	colorCorrection.Saturation = -1
+	colorCorrection.Enabled = true
+
 	local tween = colorCorrectionTween
 	if not tween then
-		tween = tweenService:Create(colorCorrection, TweenInfo.new(duration, Enum.EasingStyle.Exponential), { TintColor = Color3.fromRGB(255, 255, 255) })
+		tween = tweenService:Create(colorCorrection
+		,TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut)
+		,{ TintColor = Color3.fromRGB(255, 255, 255), Saturation = 0 })
+
 		colorCorrectionTween = tween
 	end
 
@@ -429,7 +528,7 @@ local function runMatch()
 		end
 	end
 	task.spawn(bananasSpawner.spawnBananasInMap, selectedMap, MATCH_DURATION)
-	task.spawn(colorCorrectionEffect, 4)
+	task.spawn(colorCorrectionEffect, 3)
 	task.spawn(prepareHighlight, playersForMatch, 4)
 
 	for seconds = MATCH_START_COUNTDOWN, 1, -1 do
@@ -451,9 +550,11 @@ local function runMatch()
 	end
 
 	selectedMap:SetAttribute(BANANAS_COLLECTABLE_ATTRIBUTE, false)
+	phase = "MatchEnding"
+	local playersAtEnd = getParticipatingPlayers()
 	local winner = matchLeader
 	setMatchLeader(nil)
-	for _, player in ipairs(playersForMatch) do
+	for _, player in ipairs(playersAtEnd) do
 		if player.Parent == players then
 			settleMatchBananas(player)
 			progressService.award(player, "PlayingMatches")
@@ -465,8 +566,8 @@ local function runMatch()
 	end
 	destroyActiveMap()
 	phase = "Intermission"
-	movePlayersToModel(playersForMatch, intermissionModel)
-	for _, player in ipairs(playersForMatch) do
+	movePlayersToModel(playersAtEnd, intermissionModel)
+	for _, player in ipairs(playersAtEnd) do
 		if player.Parent == players then
 			local soundName = if player == winner then soundUtils.names.matchVictory else soundUtils.names.matchDefeat
 			sendSound(player, soundName)
@@ -485,10 +586,15 @@ function matchService.init()
 	end
 	started = true
 
-	for _, player in ipairs(players:GetPlayers()) do
+	local function onPlayerAdded(player: Player)
+		enrollPlayerInMatch(player)
 		connectPlayer(player)
 	end
-	players.PlayerAdded:Connect(connectPlayer)
+
+	for _, player in ipairs(players:GetPlayers()) do
+		onPlayerAdded(player)
+	end
+	players.PlayerAdded:Connect(onPlayerAdded)
 	players.PlayerRemoving:Connect(function(player)
 		if participatingPlayers[player] then
 			progressService.discardMatchCoins(player)

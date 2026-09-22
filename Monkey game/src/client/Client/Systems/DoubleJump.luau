@@ -155,8 +155,9 @@ function doubleJump.enable(humanoid: Humanoid): Cleanup
 		end
 
 		local shiftLockActive = userInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
+		local rightMouseCameraControl = userInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
 		setAirTurnEnabled(currentState == Enum.HumanoidStateType.Jumping or currentState == Enum.HumanoidStateType.Freefall)
-		if shiftLockActive then
+		if shiftLockActive or rightMouseCameraControl then
 			setAirTurnEnabled(false)
 		end
 	end

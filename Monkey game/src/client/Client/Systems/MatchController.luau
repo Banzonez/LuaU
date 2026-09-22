@@ -24,7 +24,8 @@ local matchGui = playerGui:WaitForChild("MatchGui") :: ScreenGui
 
 local mainFrame = matchGui:WaitForChild("MainFrame") :: Frame
 local mainText = mainFrame:WaitForChild("TextLabel") :: TextLabel
-local GO_TWEEN_DURATION = 2
+local GO_TOTAL_DURATION = 2
+local GO_PHASE_DURATION = GO_TOTAL_DURATION / 2
 local CENTER_POSITION = UDim2.fromScale(0.5, 0.5)
 local GO_START_POSITION = UDim2.fromScale(0, 0.5)
 local GO_END_POSITION = UDim2.fromScale(1, 0.5)
@@ -118,26 +119,43 @@ local function showGoImage()
 	image.Visible = true
 	image.Parent = matchGui
 
-	local tween = tweenService:Create(
+	local tween1 = tweenService:Create(
 		image,
-		TweenInfo.new(GO_TWEEN_DURATION, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut),
+		TweenInfo.new(GO_PHASE_DURATION, Enum.EasingStyle.Exponential, Enum.EasingDirection.Out),
+		{ Position = CENTER_POSITION }
+	)
+
+	local tween2 = tweenService:Create(
+		image,
+		TweenInfo.new(GO_PHASE_DURATION, Enum.EasingStyle.Exponential, Enum.EasingDirection.In),
 		{ Position = GO_END_POSITION }
 	)
-	goTween = tween
-	tween.Completed:Once(function()
-		if goTween ~= tween then
+
+	goTween = tween1
+
+	tween1:Play()
+	tween1.Completed:Once(function(playbackState)
+		if goTween ~= tween1 or playbackState ~= Enum.PlaybackState.Completed then
 			return
 		end
 
-		goTween = nil
-		if activeCountdownImage == image then
-			image.Visible = false
-			image.Parent = nil
-			activeCountdownImage = nil
-		end
-		mainText.Visible = true
+		goTween = tween2
+		tween2:Play()
+
+		tween2.Completed:Once(function(exitPlaybackState)
+			if goTween ~= tween2 or exitPlaybackState ~= Enum.PlaybackState.Completed then
+				return
+			end
+
+			goTween = nil
+			if activeCountdownImage == image then
+				image.Visible = false
+				image.Parent = nil
+				activeCountdownImage = nil
+			end
+			mainText.Visible = true
+		end)
 	end)
-	tween:Play()
 end
 
 local function formatCountdown(totalSeconds: number): string
