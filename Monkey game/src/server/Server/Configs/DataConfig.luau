@@ -22,7 +22,6 @@ local Config = {
      },
 
      Coins = 0,
-     XP = 0,
      Bananas = 0,
 }
 

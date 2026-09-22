@@ -2,6 +2,7 @@ local players = game:GetService("Players")
 
 local STATS: { [string]: number } = {
 	Bananas = 0,
+	Coins = 0,
 }
 
 local initialized = false

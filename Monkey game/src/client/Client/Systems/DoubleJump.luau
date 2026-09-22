@@ -7,12 +7,16 @@ local player = players.LocalPlayer
 
 local assets = replicatedStorage:WaitForChild("Assets")
 local jumpVfx = assets:WaitForChild("AirJumpVFX")
-assert(jumpVfx:IsA("BasePart"), "ReplicatedStorage.Assets.AirJumpVFX must be a BasePart.")
 local jumpVfxTemplate = jumpVfx :: BasePart
 
 local doubleJump = {}
 
 local JUMP_RELEASE_FRAMES = 8
+local AIR_TURN_RATE = math.rad(1800)
+local AIR_TURN_RESPONSIVENESS = 80
+local AIR_TURN_MAX_TORQUE = 100000
+local MINIMUM_JUMPING_DURATION = 0.1
+local MINIMUM_MOVE_DIRECTION_MAGNITUDE = 0.001
 
 local RESET_STATES: { [Enum.HumanoidStateType]: boolean } = {
 	[Enum.HumanoidStateType.Climbing] = true,
@@ -21,6 +25,11 @@ local RESET_STATES: { [Enum.HumanoidStateType]: boolean } = {
 	[Enum.HumanoidStateType.RunningNoPhysics] = true,
 	[Enum.HumanoidStateType.Seated] = true,
 	[Enum.HumanoidStateType.Swimming] = true,
+}
+
+local AIR_ROTATION_STATES: { [Enum.HumanoidStateType]: boolean } = {
+	[Enum.HumanoidStateType.Jumping] = true,
+	[Enum.HumanoidStateType.Freefall] = true,
 }
 
 export type Cleanup = () -> ()
@@ -86,11 +95,71 @@ function doubleJump.enable(humanoid: Humanoid): Cleanup
 	local character = humanoid.Parent
 	assert(character and character:IsA("Model"), "The humanoid must be parented to a character model.")
 
+	local rootPart = character:WaitForChild("HumanoidRootPart")
+	assert(rootPart:IsA("BasePart"), "The character's HumanoidRootPart must be a BasePart.")
+	local humanoidRootPart = rootPart :: BasePart
+
 	local characterVfx = character:FindFirstChild(jumpVfxTemplate.Name)
 	if not characterVfx or not characterVfx:IsA("BasePart") then
 		characterVfx = newVfx(character)
 	end
 	local vfxPart = characterVfx :: BasePart
+	local airTurnAttachment = Instance.new("Attachment")
+	airTurnAttachment.Name = "AirTurnAttachment"
+	airTurnAttachment.Parent = humanoidRootPart
+
+	local airTurnAlignOrientation = Instance.new("AlignOrientation")
+	airTurnAlignOrientation.Name = "AirTurnAlignOrientation"
+	airTurnAlignOrientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
+	airTurnAlignOrientation.AlignType = Enum.AlignType.AllAxes
+	airTurnAlignOrientation.Attachment0 = airTurnAttachment
+	airTurnAlignOrientation.MaxAngularVelocity = AIR_TURN_RATE
+	airTurnAlignOrientation.MaxTorque = AIR_TURN_MAX_TORQUE
+	airTurnAlignOrientation.Responsiveness = AIR_TURN_RESPONSIVENESS
+	airTurnAlignOrientation.Enabled = false
+	airTurnAlignOrientation.Parent = humanoidRootPart
+
+	local autoRotateBeforeAir: boolean? = nil
+	local currentState = humanoid:GetState()
+	local jumpingAttemptId = 0
+
+	local function setAirTurnEnabled(shouldEnable: boolean)
+		if shouldEnable and not airTurnAlignOrientation.Enabled then
+			autoRotateBeforeAir = humanoid.AutoRotate
+			humanoid.AutoRotate = false
+			airTurnAlignOrientation.Enabled = true
+		elseif not shouldEnable and airTurnAlignOrientation.Enabled then
+			airTurnAlignOrientation.Enabled = false
+		end
+
+		if not shouldEnable and autoRotateBeforeAir ~= nil and humanoid.Parent then
+			humanoid.AutoRotate = autoRotateBeforeAir
+			autoRotateBeforeAir = nil
+		end
+	end
+
+	local function stopAirTurn(restoreAutoRotate: boolean)
+		local wasTurning = airTurnAlignOrientation.Enabled
+		setAirTurnEnabled(false)
+
+		if wasTurning and restoreAutoRotate and humanoidRootPart.Parent then
+			local angularVelocity = humanoidRootPart.AssemblyAngularVelocity
+			humanoidRootPart.AssemblyAngularVelocity = Vector3.new(0, angularVelocity.Y, 0)
+		end
+	end
+
+	local function updateAirTurn()
+		if humanoid.PlatformStand or humanoid.Health <= 0 then
+			setAirTurnEnabled(false)
+			return
+		end
+
+		local shiftLockActive = userInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
+		setAirTurnEnabled(currentState == Enum.HumanoidStateType.Jumping or currentState == Enum.HumanoidStateType.Freefall)
+		if shiftLockActive then
+			setAirTurnEnabled(false)
+		end
+	end
 
 	local function disable()
 		if not enabled then
@@ -99,6 +168,9 @@ function doubleJump.enable(humanoid: Humanoid): Cleanup
 
 		enabled = false
 		configuredContainers[vfxPart] = nil
+		stopAirTurn(humanoid.Health > 0 and not humanoid.PlatformStand)
+		airTurnAlignOrientation:Destroy()
+		airTurnAttachment:Destroy()
 
 		for _, connection in pairs(connections) do
 			connection:Disconnect()
@@ -110,13 +182,48 @@ function doubleJump.enable(humanoid: Humanoid): Cleanup
 	table.insert(
 		connections,
 		humanoid.StateChanged:Connect(function(_, newState)
+			currentState = newState
 			if RESET_STATES[newState] then
+				jumpingAttemptId += 1
+				stopAirTurn(true)
 				doubleJumpAvailable = false
 				doubleJumpUsed = false
 				firstJumpStarted = false
-			elseif newState == Enum.HumanoidStateType.Jumping and not doubleJumpUsed then
-				firstJumpStarted = true
+			elseif AIR_ROTATION_STATES[newState] then
+				if newState == Enum.HumanoidStateType.Jumping then
+					jumpingAttemptId += 1
+					local attemptId = jumpingAttemptId
+					task.delay(MINIMUM_JUMPING_DURATION, function()
+						if enabled and attemptId == jumpingAttemptId and currentState == Enum.HumanoidStateType.Jumping then
+							updateAirTurn()
+						end
+					end)
+				end
+
+				if newState == Enum.HumanoidStateType.Jumping and not doubleJumpUsed then
+					firstJumpStarted = true
+				end
+			else
+				stopAirTurn(false)
 			end
+		end)
+	)
+
+	table.insert(
+		connections,
+		runService.PreSimulation:Connect(function()
+			updateAirTurn()
+			if not airTurnAlignOrientation.Enabled then
+				return
+			end
+
+			local moveDirection = humanoid.MoveDirection
+			local horizontalMoveDirection = Vector3.new(moveDirection.X, 0, moveDirection.Z)
+			if horizontalMoveDirection.Magnitude < MINIMUM_MOVE_DIRECTION_MAGNITUDE then
+				return
+			end
+
+			airTurnAlignOrientation.CFrame = CFrame.lookAt(Vector3.zero, horizontalMoveDirection.Unit)
 		end)
 	)
 

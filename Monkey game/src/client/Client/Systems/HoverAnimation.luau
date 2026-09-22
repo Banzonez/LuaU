@@ -1,5 +1,8 @@
 local tweenService = game:GetService("TweenService")
 local players = game:GetService("Players")
+local replicatedStorage = game:GetService("ReplicatedStorage")
+
+local soundUtils = require(replicatedStorage:WaitForChild("Shared"):WaitForChild("Utils"):WaitForChild("SoundUtils"))
 
 local player = players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -11,13 +14,13 @@ local tweenInfo = TweenInfo.new(
 )
 
 local SIZE_OFFSET = 15
+local HOVER_SOUND_ID = "rbxassetid://107511012621133"
 
 local activeTweens: { [GuiButton]: Tween } = {}
-
-local hoverSound = Instance.new("Sound")
-hoverSound.Looped = false
-hoverSound.SoundId = "rbxassetid://107511012621133"
-hoverSound.Parent = script
+local hoverSound = soundUtils.createAsset(HOVER_SOUND_ID, script)
+if hoverSound then
+	hoverSound.Looped = false
+end
 
 local function stopTween(gui: GuiButton)
 	local tween = activeTweens[gui]
@@ -43,7 +46,9 @@ local function animate(gui: GuiButton, targetSize: UDim2)
 		end
 	end)
 	
-	hoverSound:Play()
+	if hoverSound then
+		hoverSound:Play()
+	end
 	tween:Play()
 end
 

@@ -1,3 +1,6 @@
+local debris = game:GetService("Debris")
+local lighting = game:GetService("Lighting")
+local tweenService = game:GetService("TweenService")
 local players = game:GetService("Players")
 local replicatedStorage = game:GetService("ReplicatedStorage")
 local serverStorage = game:GetService("ServerStorage")
@@ -15,12 +18,11 @@ local matchEvent = eventsFolder:FindFirstChild("MatchEvent") :: RemoteEvent
 local assetsFolder = serverStorage:FindFirstChild("Assets") :: Folder
 local mapsFolder = assetsFolder:FindFirstChild("Maps") :: Folder
 local crownTemplate = assetsFolder:FindFirstChild("Crown") :: Accessory
-local soundsFolder = serverStorage:FindFirstChild("Sounds") :: Folder
 
 local intermissionModel = workspace:FindFirstChild("Lobby") :: Model
 
-local INTERMISSION_DURATION = 30 -- 30
-local MATCH_DURATION = 5 * 60 -- 5 minutes
+local INTERMISSION_DURATION = 5 -- 30
+local MATCH_DURATION = 5 * 2 -- 5 minutes
 local MATCH_START_COUNTDOWN = 3
 local RESPAWN_IN_MATCH = true -- Set to false to leave match respawning to your game.
 local CHARACTER_ASSURANCE = 0.1
@@ -30,6 +32,7 @@ local MATCH_START_TIME_ATTRIBUTE = "BananasMatchStartedAt"
 local MATCH_BANANAS_FOLDER = "MatchBananas"
 local LEADER_CROWN_NAME = "MatchLeaderCrown"
 local LEADER_HIGHLIGHT_NAME = "MatchLeaderHighlight"
+local COUNTDOWN_HIGHLIGHT_NAME = "MatchCountdownTemporaryHighlight"
 
 local activeMap: Model?
 local started = false
@@ -300,31 +303,61 @@ local function connectPlayer(player: Player)
 	end
 end
 
-local function sendCountdown(phase: string, seconds: number, map: Model?)
+local function sendCountdown(phase: string, seconds: number, map: Model?, soundName: string?)
 	matchEvent:FireAllClients({
 		phase = phase,
 		seconds = seconds,
 		map = map,
+		soundName = soundName,
 	})
 end
 
-local function playGlobalSound(soundName: string)
-	if soundsFolder then
-		soundUtils.playNamed(soundsFolder, soundName)
-	end
+local function sendSound(player: Player, soundName: string)
+	matchEvent:FireClient(player, {
+		action = "PlaySound",
+		soundName = soundName,
+	})
 end
 
-local function sendSound(player: Player, soundName: string)
-	if not soundsFolder then
+local colorCorrection = Instance.new("ColorCorrectionEffect")
+colorCorrection.TintColor = Color3.fromRGB(0, 0, 0)
+colorCorrection.Enabled = false
+colorCorrection.Saturation = -1
+colorCorrection.Parent = lighting
+local colorCorrectionTween: Tween?
+
+local function colorCorrectionEffect(duration: number)
+	if colorCorrectionTween and colorCorrectionTween.PlaybackState == Enum.PlaybackState.Playing then
 		return
 	end
 
-	local soundData = soundUtils.getNamedData(soundsFolder, soundName)
-	if soundData then
-		matchEvent:FireClient(player, {
-			action = "PlaySound",
-			sound = soundData,
-		})
+	colorCorrection.Enabled = true
+	colorCorrection.TintColor = Color3.fromRGB(0, 0, 0)
+	local tween = colorCorrectionTween
+	if not tween then
+		tween = tweenService:Create(colorCorrection, TweenInfo.new(duration, Enum.EasingStyle.Exponential), { TintColor = Color3.fromRGB(255, 255, 255) })
+		colorCorrectionTween = tween
+	end
+
+	tween:Play()
+	tween.Completed:Wait()
+
+	colorCorrection.Enabled = false
+end
+
+local countdownHighlight = Instance.new("Highlight")
+countdownHighlight.Name = COUNTDOWN_HIGHLIGHT_NAME
+countdownHighlight.FillColor = Color3.fromRGB(255, 255, 255)
+local function prepareHighlight(playersForHighlight: { Player }, lifetime: number)
+	for _, player in ipairs(playersForHighlight) do
+		local char = player.Character
+		if not char then
+			continue
+		end
+
+		local newLight = countdownHighlight:Clone()
+		newLight.Parent = char
+		debris:AddItem(newLight, lifetime)
 	end
 end
 
@@ -392,16 +425,19 @@ local function runMatch()
 	movePlayersToModel(playersForMatch, selectedMap)
 	for _, player in ipairs(playersForMatch) do
 		if player.Parent == players then
-			sendSound(player, soundUtils.Names.TeleportToMatch)
+			sendSound(player, soundUtils.names.teleportToMatch)
 		end
 	end
 	task.spawn(bananasSpawner.spawnBananasInMap, selectedMap, MATCH_DURATION)
+	task.spawn(colorCorrectionEffect, 4)
+	task.spawn(prepareHighlight, playersForMatch, 4)
 
 	for seconds = MATCH_START_COUNTDOWN, 1, -1 do
-		sendCountdown("MatchStarting", seconds, selectedMap)
-		playGlobalSound(soundUtils.Names.MatchCountdown)
+		sendCountdown("MatchStarting", seconds, selectedMap, soundUtils.names.matchCountdown)
 		task.wait(1)
 	end
+	sendCountdown("MatchStarting", 0, selectedMap, soundUtils.names.matchGo)
+	task.wait(1)
 
 	phase = "Match"
 	selectedMap:SetAttribute(BANANAS_COLLECTABLE_ATTRIBUTE, true)
@@ -432,7 +468,7 @@ local function runMatch()
 	movePlayersToModel(playersForMatch, intermissionModel)
 	for _, player in ipairs(playersForMatch) do
 		if player.Parent == players then
-			local soundName = if player == winner then soundUtils.Names.MatchVictory else soundUtils.Names.MatchDefeat
+			local soundName = if player == winner then soundUtils.names.matchVictory else soundUtils.names.matchDefeat
 			sendSound(player, soundName)
 		end
 	end

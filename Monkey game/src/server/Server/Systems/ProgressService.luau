@@ -4,7 +4,6 @@ export type RewardSource = "Winning" | "CollectingBananas" | "LandingPunches" | 
 
 type Reward = {
 	Coins: number,
-	XP: number,
 }
 
 type ProgressService = {
@@ -22,7 +21,7 @@ local function isValidAmount(amount: number): boolean
 	return amount == amount and amount > 0 and amount < math.huge
 end
 
-local function incrementAttribute(player: Player, dataName: "Bananas" | "Coins" | "XP", amount: number): boolean
+local function incrementAttribute(player: Player, dataName: "Bananas" | "Coins", amount: number): boolean
 	if amount == 0 then
 		return true
 	end
@@ -52,13 +51,12 @@ function progressService.award(player: Player, source: RewardSource, quantity: n
 	end
 
 	local coins = math.floor(reward.Coins * multiplier)
-	local xp = math.floor(reward.XP * multiplier)
-	local coinsAdded = incrementAttribute(player, "Coins", coins)
-	local xpAdded = incrementAttribute(player, "XP", xp)
-	if coinsAdded and matchCoinsEarned[player] then
+	if matchCoinsEarned[player] ~= nil then
 		matchCoinsEarned[player] += coins
+		return true
 	end
-	return coinsAdded and xpAdded
+
+	return incrementAttribute(player, "Coins", coins)
 end
 
 function progressService.beginMatch(player: Player)
@@ -66,20 +64,15 @@ function progressService.beginMatch(player: Player)
 end
 
 function progressService.discardMatchCoins(player: Player): boolean
-	local coins = matchCoinsEarned[player]
-	if not coins or coins <= 0 then
-		matchCoinsEarned[player] = nil
-		return true
-	end
-
-	local success = incrementAttribute(player, "Coins", -coins)
-	if success then
-		matchCoinsEarned[player] = nil
-	end
-	return success
+	matchCoinsEarned[player] = nil
+	return true
 end
 
 function progressService.finishMatch(player: Player)
+	local coins = matchCoinsEarned[player]
+	if coins and coins > 0 then
+		incrementAttribute(player, "Coins", coins)
+	end
 	matchCoinsEarned[player] = nil
 end
 

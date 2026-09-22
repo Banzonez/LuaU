@@ -2,18 +2,13 @@ local collectionService = game:GetService("CollectionService")
 local players = game:GetService("Players")
 local replicatedStorage = game:GetService("ReplicatedStorage")
 local runService = game:GetService("RunService")
-local serverStorage = game:GetService("ServerStorage")
 local workspace = game:GetService("Workspace")
 
 local bananaConfig = require(script.Parent.Parent.Configs.BananaConfig)
 local bananasSpawner = require(script.Parent.Parent.Utils.BananasSpawner)
 local progressService = require(script.Parent.ProgressService)
 
-local soundsFolder = serverStorage:WaitForChild("Sounds")
-local bananaCollectSounds = soundsFolder:WaitForChild("BananaCollect")
 local sharedFolder = replicatedStorage:WaitForChild("Shared")
-local sharedUtilsFolder = sharedFolder:FindFirstChild("Utils") :: Folder
-local soundUtils = require(sharedUtilsFolder:FindFirstChild("SoundUtils") :: ModuleScript)
 local eventsFolder = sharedFolder:WaitForChild("Events")
 local matchEvent = eventsFolder:WaitForChild("MatchEvent") :: RemoteEvent
 
@@ -29,7 +24,7 @@ local MATCH_BANANAS_FOLDER = "MatchBananas"
 local SPATIAL_CHECK_INTERVAL = 0.1
 local GROUND_CHECK_DISTANCE = 1
 local MINIMUM_GROUND_NORMAL_Y = 0.3
-local COLLECTION_ANIMATION_DURATION = 0.35
+local COLLECTION_ANIMATION_DURATION = 0.25
 local COLLECTION_DESTROY_DELAY = 0.45
 
 local COLLECTION_SOUND_NAMES = {
@@ -48,13 +43,6 @@ type BananaState = {
 	raycastParams: RaycastParams?,
 }
 
-type SoundData = {
-	soundId: string,
-	volume: number,
-	playbackSpeed: number,
-}
-
-local collectionSounds: { [string]: Sound } = {}
 local bananaStates: { [Model]: BananaState } = {}
 local collectionOverlapParams = OverlapParams.new()
 local spatialCheckAccumulator = 0
@@ -93,17 +81,12 @@ local function getBananaType(banana: Model): string?
 	return nil
 end
 
-local function getCollectionSound(bananaType: string?): SoundData?
+local function getCollectionSoundName(bananaType: string?): string?
 	if not bananaType then
 		return nil
 	end
 
-	local template = collectionSounds[bananaType]
-	if not template then
-		return nil
-	end
-
-	return soundUtils.getNamedData(bananaCollectSounds, template.Name)
+	return COLLECTION_SOUND_NAMES[bananaType]
 end
 
 local function collectBanana(banana: Model, state: BananaState, player: Player)
@@ -130,7 +113,7 @@ local function collectBanana(banana: Model, state: BananaState, player: Player)
 	collectedBanana.Parent = matchBananas
 	progressService.award(player, "CollectingBananas", state.points)
 
-	local collectionSound = getCollectionSound(state.bananaType)
+	local collectionSoundName = getCollectionSoundName(state.bananaType)
 	collectionService:RemoveTag(banana, BANANA_TAG)
 
 	matchEvent:FireAllClients({
@@ -140,7 +123,7 @@ local function collectBanana(banana: Model, state: BananaState, player: Player)
 		pos = banana:GetPivot().Position,
 		points = state.points,
 		duration = COLLECTION_ANIMATION_DURATION,
-		sound = collectionSound,
+		soundName = collectionSoundName,
 	})
 
 	task.delay(COLLECTION_DESTROY_DELAY, function()
@@ -317,15 +300,6 @@ function bananasHandler.init()
 		return
 	end
 	initialized = true
-
-	for bananaType, soundName in pairs(COLLECTION_SOUND_NAMES) do
-		local sound = bananaCollectSounds:FindFirstChild(soundName)
-		if sound and sound:IsA("Sound") then
-			collectionSounds[bananaType] = sound
-		else
-			warn(`Sound "{soundName}" is missing from {bananaCollectSounds:GetFullName()}.`)
-		end
-	end
 
 	collectionService:GetInstanceAddedSignal(BANANA_TAG):Connect(trackBanana)
 	collectionService:GetInstanceRemovedSignal(BANANA_TAG):Connect(function(instance)

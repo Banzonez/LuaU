@@ -4,23 +4,18 @@ local progressConfig = {
 	Rewards = {
 		Winning = {
 			Coins = 100,
-			XP = 100,
 		},
 		CollectingBananas = {
 			Coins = 1,
-			XP = 1,
 		},
 		LandingPunches = {
-			Coins = 5,
-			XP = 5,
+			Coins = 10,
 		},
 		CompletingQuests = {
-			Coins = 50,
-			XP = 50,
+			Coins = 000,
 		},
 		PlayingMatches = {
-			Coins = 25,
-			XP = 25,
+			Coins = 0,
 		},
 	},
 }

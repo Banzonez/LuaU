@@ -1,423 +1,391 @@
 --[[
-    GuiAnimator — Módulo de animações para GUI (LuaU)
+	GuiAnimator provides reusable show and hide animations for GuiObjects.
 
-    SETUP:
-        local anim = GuiAnimator.new(meuFrame, "PopIn")
-        anim:Play()    -- anima entrada, seta Visible = true
-        anim:Return()  -- anima saída,   seta Visible = false
+	Example:
+		local animator = GuiAnimator.new(frame, "PopIn", {
+			Duration = 0.25,
+			ShowSound = "rbxassetid://123",
+		})
 
-    ESTILOS:
-        "SlideUp"   — sobe da parte inferior
-        "PopIn"     — escala de zero com bounce
-        "FadeSlide" — fade + deslize lateral
-        "Flip"      — simula virada no eixo Y
-        "Elastic"   — overshoot elástico
-        "Swoop"     — momentum de canto com aceleração
+		animator:Show()
+		animator:Hide()
+]]
 
-    CONFIGURE (campos disponíveis):
-        Duracao              number          duração da entrada em segundos
-        EasingStyle          EasingStyle
-        EasingDirection      EasingDirection
-        DeslocamentoOffset   UDim2           offset de posição no estado inicial
-        EscalaInicial        Vector2         escala de partida via UIScale
-        TransparenciaInicial number          BackgroundTransparency inicial (0–1)
-        IntroSound           string          "rbxassetid://..."
-        EndSound             string
+local tweenService = game:GetService("TweenService")
+local replicatedStorage = game:GetService("ReplicatedStorage")
 
-    RECEITAS:
-        Frame / painel       GuiAnimator.new(frame, "SlideUp")
-        Popup / modal        GuiAnimator.new(popup, "Elastic")
-        Botão de clique      GuiAnimator.new(btn, "PopIn") + Configure({ Duracao=0.18, EscalaInicial=Vector2.new(0.88,0.88) })
-        Tooltip              GuiAnimator.new(tip, "FadeSlide") + Configure({ Duracao=0.22, DeslocamentoOffset=UDim2.new(-0.04,0,0,0) })
-        Card virando         GuiAnimator.new(card, "Flip")
-        Entrada dramática    GuiAnimator.new(el, "Swoop") + Configure({ Duracao=0.75 })
---]]
-
-local TweenService = game:GetService("TweenService")
-local SoundService = game:GetService("SoundService")
-
-local EstilosConfig = {
-	SlideUp = {
-		Duracao = 0.55,
-		EasingStyle = Enum.EasingStyle.Quint,
-		EasingDirection = Enum.EasingDirection.Out,
-		DeslocamentoOffset = UDim2.new(0, 0, 0.18, 0),
-		TransparenciaInicial = 0.6,
-		IntroSound = "rbxassetid://10128766965",
-		EndSound = "rbxassetid://139719503904449",
-	},
-	PopIn = {
-		Duracao = 0.45,
-		EasingStyle = Enum.EasingStyle.Back,
-		EasingDirection = Enum.EasingDirection.Out,
-		EscalaInicial = Vector2.new(0.7, 0.7),
-		TransparenciaInicial = 0,
-		IntroSound = "rbxassetid://139800881181209",
-		EndSound = "rbxassetid://139719503904449",
-	},
-	FadeSlide = {
-		Duracao = 0.5,
-		EasingStyle = Enum.EasingStyle.Quad,
-		EasingDirection = Enum.EasingDirection.Out,
-		DeslocamentoOffset = UDim2.new(-0.08, 0, 0, 0),
-		TransparenciaInicial = 1,
-		IntroSound = "rbxassetid://10128766965",
-		EndSound = "rbxassetid://139719503904449",
-	},
-	Flip = {
-		Duracao = 0.5,
-		EasingStyle = Enum.EasingStyle.Cubic,
-		EasingDirection = Enum.EasingDirection.Out,
-		EscalaInicial = Vector2.new(1, 0.05),
-		TransparenciaInicial = 0.4,
-		IntroSound = "rbxassetid://10128766965",
-		EndSound = "rbxassetid://139719503904449",
-	},
-	Elastic = {
-		Duracao = 0.65,
-		EasingStyle = Enum.EasingStyle.Elastic,
-		EasingDirection = Enum.EasingDirection.Out,
-		EscalaInicial = Vector2.new(0.55, 0.55),
-		TransparenciaInicial = 0,
-		IntroSound = "rbxassetid://139800881181209",
-		EndSound = "rbxassetid://139719503904449",
-	},
-	Swoop = {
-		Duracao = 0.6,
-		EasingStyle = Enum.EasingStyle.Quart,
-		EasingDirection = Enum.EasingDirection.Out,
-		DeslocamentoOffset = UDim2.new(0.12, 0, 0.1, 0),
-		EscalaInicial = Vector2.new(0.85, 0.85),
-		TransparenciaInicial = 0.7,
-		IntroSound = "rbxassetid://10128766965",
-		EndSound = "rbxassetid://139719503904449",
-	},
-}
-
-local ESTILOS_VALIDOS = {}
-for nome in pairs(EstilosConfig) do
-	ESTILOS_VALIDOS[nome] = true
-end
-
--- ─── Helpers ─────────────────────────────────────────────────────────────────
-
-local function playSound(id, shouldWait)
-	local sound = Instance.new("Sound")
-	sound.SoundId = id
-	sound.Parent = SoundService
-	sound:Play()
-	if shouldWait then
-		sound.Ended:Wait()
-	end
-	game:GetService("Debris"):AddItem(sound, 10)
-end
-
--- Salva BackgroundTransparency, TextTransparency e ImageTransparency de cada filho
--- para poder restaurar corretamente no Return (sem sobrescrever valores customizados)
-local function capturarTransparenciasFilhos(pai)
-	local snapshot = {}
-	local function capturar(obj)
-		for _, filho in ipairs(obj:GetChildren()) do
-			if filho:IsA("GuiObject") then
-				local r = { BackgroundTransparency = filho.BackgroundTransparency }
-				if filho:IsA("TextLabel") or filho:IsA("TextButton") or filho:IsA("TextBox") then
-					r.TextTransparency = filho.TextTransparency
-				end
-				if filho:IsA("ImageLabel") or filho:IsA("ImageButton") then
-					r.ImageTransparency = filho.ImageTransparency
-				end
-				snapshot[filho] = r
-				capturar(filho)
-			end
-		end
-	end
-	capturar(pai)
-	return snapshot
-end
-
--- Seta filhos instantaneamente — usado antes do tween começar (estado inicial)
-local function setarTransparenciaFilhos(snapshot, transparencia, fator)
-	for filho, original in pairs(snapshot) do
-		if filho.Parent then
-			filho.BackgroundTransparency = original.BackgroundTransparency
-				+ (transparencia - original.BackgroundTransparency) * fator
-			if original.TextTransparency ~= nil then
-				filho.TextTransparency = original.TextTransparency + (transparencia - original.TextTransparency) * fator
-			end
-			if original.ImageTransparency ~= nil then
-				filho.ImageTransparency = original.ImageTransparency
-					+ (transparencia - original.ImageTransparency) * fator
-			end
-		end
-	end
-end
-
--- Anima filhos via tween junto com o pai para evitar flash/pop visual
-local function tweenTransparenciaFilhos(snapshot, transparencia, fator, info)
-	for filho, original in pairs(snapshot) do
-		if filho.Parent then
-			local alvo = {}
-			alvo.BackgroundTransparency = original.BackgroundTransparency
-				+ (transparencia - original.BackgroundTransparency) * fator
-			if original.TextTransparency ~= nil then
-				alvo.TextTransparency = original.TextTransparency + (transparencia - original.TextTransparency) * fator
-			end
-			if original.ImageTransparency ~= nil then
-				alvo.ImageTransparency = original.ImageTransparency
-					+ (transparencia - original.ImageTransparency) * fator
-			end
-			TweenService:Create(filho, info, alvo):Play()
-		end
-	end
-end
-
--- ─── Classe ──────────────────────────────────────────────────────────────────
+local soundUtils = require(replicatedStorage:WaitForChild("Shared"):WaitForChild("Utils"):WaitForChild("SoundUtils"))
 
 local GuiAnimator = {}
 GuiAnimator.__index = GuiAnimator
 
-function GuiAnimator.new(guiObject: GuiObject, estilo: string)
-	assert(
-		typeof(guiObject) == "Instance" and guiObject:IsA("GuiObject"),
-		"[GuiAnimator] Primeiro argumento deve ser um GuiObject válido."
-	)
-	assert(
-		ESTILOS_VALIDOS[estilo],
-		"[GuiAnimator] Estilo inválido: '"
-			.. tostring(estilo)
-			.. "'. Válidos: SlideUp, PopIn, FadeSlide, Flip, Elastic, Swoop"
-	)
+local STYLE_CONFIGS = {
+	SlideUp = {
+		Duration = 0.55, EasingStyle = Enum.EasingStyle.Quint, EasingDirection = Enum.EasingDirection.Out,
+		PositionOffset = UDim2.new(0, 0, 0.18, 0), StartTransparency = 0.6,
+		AnimateBackground = false,
+		ShowSound = "rbxassetid://10128766965", HideSound = "rbxassetid://139719503904449",
+	},
+	PopIn = {
+		Duration = 0.45, EasingStyle = Enum.EasingStyle.Back, EasingDirection = Enum.EasingDirection.Out,
+		StartScale = Vector2.new(0.7, 0.7), StartTransparency = 0,
+		AnimateBackground = false,
+		ShowSound = "rbxassetid://139800881181209", HideSound = "rbxassetid://139719503904449",
+	},
+	FadeSlide = {
+		Duration = 0.5, EasingStyle = Enum.EasingStyle.Quad, EasingDirection = Enum.EasingDirection.Out,
+		PositionOffset = UDim2.new(-0.08, 0, 0, 0), StartTransparency = 1,
+		AnimateBackground = false,
+		ShowSound = "rbxassetid://10128766965", HideSound = "rbxassetid://139719503904449",
+	},
+	Flip = {
+		Duration = 0.5, EasingStyle = Enum.EasingStyle.Cubic, EasingDirection = Enum.EasingDirection.Out,
+		StartScale = Vector2.new(1, 0.05), StartTransparency = 0.4,
+		AnimateBackground = false,
+		ShowSound = "rbxassetid://10128766965", HideSound = "rbxassetid://139719503904449",
+	},
+	Elastic = {
+		Duration = 0.65, EasingStyle = Enum.EasingStyle.Elastic, EasingDirection = Enum.EasingDirection.Out,
+		StartScale = Vector2.new(0.55, 0.55), StartTransparency = 0,
+		AnimateBackground = false,
+		ShowSound = "rbxassetid://139800881181209", HideSound = "rbxassetid://139719503904449",
+	},
+	Swoop = {
+		Duration = 0.6, EasingStyle = Enum.EasingStyle.Quart, EasingDirection = Enum.EasingDirection.Out,
+		PositionOffset = UDim2.new(0.12, 0, 0.1, 0), StartScale = Vector2.new(0.85, 0.85), StartTransparency = 0.7,
+		AnimateBackground = false,
+		ShowSound = "rbxassetid://10128766965", HideSound = "rbxassetid://139719503904449",
+	},
+}
 
+type TransparencyState = { BackgroundTransparency: number, TextTransparency: number?, ImageTransparency: number? }
+
+local function copyConfig(config)
+	local copy = {}
+	for key, value in pairs(config) do
+		copy[key] = value
+	end
+	return copy
+end
+
+local function getTransparencyState(guiObject: GuiObject): TransparencyState
+	local state: TransparencyState = { BackgroundTransparency = guiObject.BackgroundTransparency }
+	if guiObject:IsA("TextLabel") or guiObject:IsA("TextButton") or guiObject:IsA("TextBox") then
+		state.TextTransparency = guiObject.TextTransparency
+	end
+	if guiObject:IsA("ImageLabel") or guiObject:IsA("ImageButton") then
+		state.ImageTransparency = guiObject.ImageTransparency
+	end
+	return state
+end
+
+local function captureDescendantTransparency(guiObject: GuiObject)
+	local snapshot = {}
+	for _, descendant in ipairs(guiObject:GetDescendants()) do
+		if descendant:IsA("GuiObject") then
+			snapshot[descendant] = getTransparencyState(descendant)
+		end
+	end
+	return snapshot
+end
+
+local function getTransparencyValue(originalValue: number, targetTransparency: number, alpha: number): number
+	return originalValue + (targetTransparency - originalValue) * alpha
+end
+
+local function applyDescendantTransparency(
+	snapshot,
+	targetTransparency: number,
+	alpha: number,
+	animateBackground: boolean
+)
+	for guiObject, original in pairs(snapshot) do
+		if guiObject.Parent then
+			if animateBackground then
+				guiObject.BackgroundTransparency = getTransparencyValue(original.BackgroundTransparency, targetTransparency, alpha)
+			end
+			if original.TextTransparency ~= nil then
+				guiObject.TextTransparency = getTransparencyValue(original.TextTransparency, targetTransparency, alpha)
+			end
+			if original.ImageTransparency ~= nil then
+				guiObject.ImageTransparency = getTransparencyValue(original.ImageTransparency, targetTransparency, alpha)
+			end
+		end
+	end
+end
+
+local function createDescendantTweens(
+	snapshot,
+	targetTransparency: number,
+		alpha: number,
+		tweenInfo: TweenInfo,
+		animateBackground: boolean
+)
+	local tweens = {}
+	for guiObject, original in pairs(snapshot) do
+		if guiObject.Parent then
+			local goals = {}
+			local hasGoals = animateBackground
+			if animateBackground then
+				goals.BackgroundTransparency = getTransparencyValue(original.BackgroundTransparency, targetTransparency, alpha)
+			end
+			if original.TextTransparency ~= nil then
+				goals.TextTransparency = getTransparencyValue(original.TextTransparency, targetTransparency, alpha)
+				hasGoals = true
+			end
+			if original.ImageTransparency ~= nil then
+				goals.ImageTransparency = getTransparencyValue(original.ImageTransparency, targetTransparency, alpha)
+				hasGoals = true
+			end
+			if hasGoals then
+				table.insert(tweens, tweenService:Create(guiObject, tweenInfo, goals))
+			end
+		end
+	end
+	return tweens
+end
+
+local function getStyleConfig(styleName: string)
+	local config = STYLE_CONFIGS[styleName]
+	assert(config, ("[GuiAnimator] Unknown style %q."):format(styleName))
+	return config
+end
+
+local function playSound(assetId: string?, shouldWait: boolean)
+	if not assetId then
+		return
+	end
+	local sound = soundUtils.playAsset(assetId)
+	if shouldWait and sound then
+		sound.Ended:Wait()
+	end
+end
+
+function GuiAnimator.new(guiObject: GuiObject, styleName: string, overrides: { [string]: any }?)
+	assert(typeof(guiObject) == "Instance" and guiObject:IsA("GuiObject"), "[GuiAnimator] guiObject must be a GuiObject.")
 	local self = setmetatable({}, GuiAnimator)
-
 	self._gui = guiObject
-	self._estilo = estilo
-
-	-- Cópia rasa para que :Configure() não afete outras instâncias do mesmo estilo
-	self._config = {}
-	for k, v in pairs(EstilosConfig[estilo]) do
-		self._config[k] = v
-	end
-
-	-- Estado original salvo no new() — usado para restaurar após Return()
-	self._posicaoOriginal = guiObject.Position
-	self._tamanhoOriginal = guiObject.Size
-	self._transparenciaOriginal = guiObject.BackgroundTransparency
-	self._snapshotFilhos = capturarTransparenciasFilhos(guiObject)
-
-	self._tweenAtivo = nil
-	self._tweensParalelos = {}
-	self._callbackConcluido = nil
-	self.State = "Idle" -- "Idle" | "Playing" | "Returning"
-
+	self._styleName = styleName
+	self._config = copyConfig(getStyleConfig(styleName))
+	self._originalPosition = guiObject.Position
+	self._originalSize = guiObject.Size
+	self._originalBackgroundTransparency = guiObject.BackgroundTransparency
+	self._descendantTransparency = captureDescendantTransparency(guiObject)
+	self._activeTweens = {}
+	self._primaryTween = nil
+	self._completionCallback = nil
 	self._uiScale = nil
-	self._uiScaleCriado = false
-	if self._config.EscalaInicial then
-		self:_garantirUIScale()
+	self._createdUiScale = false
+	self.State = "Idle"
+	if overrides then
+		self:Configure(overrides)
 	end
-
 	return self
 end
 
--- Sobrescreve campos da config desta instância sem afetar outras do mesmo estilo
--- Valida o campo antes de aceitar para evitar typo silencioso
 function GuiAnimator:Configure(overrides: { [string]: any })
-	for campo, valor in pairs(overrides) do
-		assert(self._config[campo] ~= nil, "[GuiAnimator] Campo inválido em Configure(): '" .. tostring(campo) .. "'")
-		self._config[campo] = valor
+	for key, value in pairs(overrides) do
+		assert(self._config[key] ~= nil, ("[GuiAnimator] Unknown configuration field %q."):format(key))
+		self._config[key] = value
 	end
-	if overrides.EscalaInicial and not self._uiScale then
-		self:_garantirUIScale()
-	end
+	return self
 end
 
-function GuiAnimator:SetEasing(estilo: Enum.EasingStyle, direcao: Enum.EasingDirection)
-	self._config.EasingStyle = estilo
-	self._config.EasingDirection = direcao
+function GuiAnimator:SetEasing(easingStyle: Enum.EasingStyle, easingDirection: Enum.EasingDirection)
+	self._config.EasingStyle = easingStyle
+	self._config.EasingDirection = easingDirection
+	return self
 end
 
-function GuiAnimator:OnComplete(callback: (any, string) -> ())
-	self._callbackConcluido = callback
+function GuiAnimator:SetStyle(styleName: string)
+	assert(self.State == "Idle", "[GuiAnimator] Cannot change style while an animation is playing.")
+	self._styleName = styleName
+	self._config = copyConfig(getStyleConfig(styleName))
+	return self
+end
+
+function GuiAnimator:OnComplete(callback)
+	self._completionCallback = callback
+	return self
+end
+
+function GuiAnimator:IsPlaying(): boolean
+	return self.State ~= "Idle"
+end
+
+function GuiAnimator:IsVisible(): boolean
+	return self._gui ~= nil and self._gui.Visible
+end
+
+function GuiAnimator:Refresh()
+	assert(self.State == "Idle", "[GuiAnimator] Cannot refresh while an animation is playing.")
+	local guiObject = self._gui
+	assert(guiObject, "[GuiAnimator] Cannot refresh a destroyed animator.")
+	self._originalPosition = guiObject.Position
+	self._originalSize = guiObject.Size
+	self._originalBackgroundTransparency = guiObject.BackgroundTransparency
+	self._descendantTransparency = captureDescendantTransparency(guiObject)
+	return self
+end
+
+function GuiAnimator:Show(waitForSound: boolean?)
+	self:_play(false, waitForSound == true)
+end
+
+function GuiAnimator:Hide(waitForSound: boolean?)
+	self:_play(true, waitForSound == true)
+end
+
+function GuiAnimator:Stop()
+	self:_cancelTweens()
+	self.State = "Idle"
+	if self._gui then
+		self._gui.Visible = false
+	end
+	return self
+end
+
+-- Compatibility aliases for the previous API.
+function GuiAnimator:Play(waitForSound: boolean?)
+	self:Show(waitForSound)
+end
+
+function GuiAnimator:Return(waitForSound: boolean?)
+	self:Hide(waitForSound)
 end
 
 function GuiAnimator:PlaySound(shouldWait: boolean?)
-	local id = (self.State == "Returning") and self._config.EndSound or self._config.IntroSound
-	if id then
-		playSound(id, shouldWait or false)
-	end
-end
-
-function GuiAnimator:Play(waitSound: boolean?)
-	self:_cancelarTweens()
-	self._gui.Visible = true
-	self:_aplicarEstadoInicial()
-
-	local config = self._config
-	local info = TweenInfo.new(config.Duracao, config.EasingStyle, config.EasingDirection)
-	local alvoEscala, alvoGui = self:_construirAlvos(false)
-
-	local principal = TweenService:Create(alvoEscala and self._uiScale or self._gui, info, alvoEscala or alvoGui)
-
-	if alvoEscala and alvoGui then -- tween paralelo no gui quando o principal é no UIScale
-		local tp = TweenService:Create(self._gui, info, alvoGui)
-		tp:Play()
-		table.insert(self._tweensParalelos, tp)
-	end
-	tweenTransparenciaFilhos(self._snapshotFilhos, config.TransparenciaInicial, 0, info) -- anima filhos junto
-
-	self._tweenAtivo = principal
-	self.State = "Playing"
-
-	principal.Completed:Connect(function(estado)
-		if estado ~= Enum.PlaybackState.Completed then
-			return
-		end
-		self._tweenAtivo = nil
-		self.State = "Idle"
-		if self._callbackConcluido then
-			self._callbackConcluido(self, "Play")
-		end
-	end)
-
-	principal:Play()
-	self:PlaySound(waitSound)
-end
-
-function GuiAnimator:Return(waitSound: boolean?)
-	self:_cancelarTweens()
-
-	local config = self._config
-	local info = TweenInfo.new(config.Duracao * 0.85, config.EasingStyle, Enum.EasingDirection.In) -- saída levemente mais rápida
-	local alvoEscala, alvoGui = self:_construirAlvos(true)
-
-	local principal = TweenService:Create(alvoEscala and self._uiScale or self._gui, info, alvoEscala or alvoGui)
-
-	if alvoEscala and alvoGui then
-		local tp = TweenService:Create(self._gui, info, alvoGui)
-		tp:Play()
-		table.insert(self._tweensParalelos, tp)
-	end
-	tweenTransparenciaFilhos(self._snapshotFilhos, config.TransparenciaInicial, 1, info) -- anima filhos junto
-
-	self._tweenAtivo = principal
-	self.State = "Returning"
-
-	principal.Completed:Connect(function(estado)
-		if estado ~= Enum.PlaybackState.Completed then
-			return
-		end
-		self._tweenAtivo = nil
-		self.State = "Idle"
-		self._gui.Visible = false
-		if self._callbackConcluido then
-			self._callbackConcluido(self, "Return")
-		end
-	end)
-
-	principal:Play()
-	self:PlaySound(waitSound)
+	playSound(if self.State == "Hiding" then self._config.HideSound else self._config.ShowSound, shouldWait == true)
 end
 
 function GuiAnimator:Destroy()
-	self:_cancelarTweens()
-	if self._uiScaleCriado and self._uiScale and self._uiScale.Parent then
+	self:_cancelTweens()
+	if self._createdUiScale and self._uiScale and self._uiScale.Parent then
 		self._uiScale:Destroy()
 	end
 	self._gui = nil
 	self._uiScale = nil
-	self._snapshotFilhos = nil
-	self._callbackConcluido = nil
+	self._descendantTransparency = {}
+	self._completionCallback = nil
 end
 
--- ─── Privados ─────────────────────────────────────────────────────────────────
-
-function GuiAnimator:_garantirUIScale()
-	local existente = self._gui:FindFirstChildOfClass("UIScale")
-	if existente then
-		self._uiScale = existente
-		self._uiScaleCriado = false -- não foi criado por nós, não destruímos no Destroy()
+function GuiAnimator:_ensureUiScale(): UIScale
+	if self._uiScale and self._uiScale.Parent then
+		return self._uiScale
+	end
+	local guiObject = self._gui
+	assert(guiObject, "[GuiAnimator] Cannot animate a destroyed animator.")
+	local existingScale = guiObject:FindFirstChildOfClass("UIScale")
+	if existingScale then
+		self._uiScale = existingScale
+		self._createdUiScale = false
 	else
-		local nova = Instance.new("UIScale")
-		nova.Scale = 1
-		nova.Parent = self._gui
-		self._uiScale = nova
-		self._uiScaleCriado = true
+		local uiScale = Instance.new("UIScale")
+		uiScale.Scale = 1
+		uiScale.Parent = guiObject
+		self._uiScale = uiScale
+		self._createdUiScale = true
 	end
+	return self._uiScale
 end
 
-function GuiAnimator:_cancelarTweens()
-	local activeTween = self._tweenAtivo
-	if activeTween then
-		activeTween:Cancel()
-		activeTween = nil
+function GuiAnimator:_cancelTweens()
+	for _, tween in ipairs(self._activeTweens) do
+		tween:Cancel()
 	end
-
-	for _, tp in ipairs(self._tweensParalelos) do
-		tp:Cancel()
-	end
-	self._tweensParalelos = {}
+	table.clear(self._activeTweens)
+	self._primaryTween = nil
 end
 
-function GuiAnimator:_aplicarEstadoInicial()
+function GuiAnimator:_getScaledSize(scale: Vector2): UDim2
+	return UDim2.new(self._originalSize.X.Scale * scale.X, self._originalSize.X.Offset * scale.X, self._originalSize.Y.Scale * scale.Y, self._originalSize.Y.Offset * scale.Y)
+end
+
+function GuiAnimator:_applyInitialState()
+	local guiObject = self._gui
+	assert(guiObject, "[GuiAnimator] Cannot animate a destroyed animator.")
 	local config = self._config
-	local gui = self._gui
-
-	if config.DeslocamentoOffset then
-		gui.Position = self._posicaoOriginal + config.DeslocamentoOffset
+	guiObject.Position = self._originalPosition + (config.PositionOffset or UDim2.new())
+	if config.AnimateBackground then
+		guiObject.BackgroundTransparency = config.StartTransparency
 	end
-
-	if config.EscalaInicial then
-		self:_garantirUIScale()
-		self._uiScale.Scale = config.EscalaInicial.X
-	end
-
-	if self._estilo == "Flip" then -- Flip manipula Size diretamente no eixo Y para simular virada
-		gui.Size = UDim2.new(
-			self._tamanhoOriginal.X.Scale,
-			self._tamanhoOriginal.X.Offset,
-			self._tamanhoOriginal.Y.Scale * config.EscalaInicial.Y,
-			self._tamanhoOriginal.Y.Offset * config.EscalaInicial.Y
-		)
-	end
-
-	if config.TransparenciaInicial ~= nil then
-		gui.BackgroundTransparency = config.TransparenciaInicial
-		setarTransparenciaFilhos(self._snapshotFilhos, config.TransparenciaInicial, 1)
+	applyDescendantTransparency(self._descendantTransparency, config.StartTransparency, 1, config.AnimateBackground)
+	if self._styleName == "Flip" then
+		guiObject.Size = self:_getScaledSize(config.StartScale)
+	elseif config.StartScale then
+		self:_ensureUiScale().Scale = config.StartScale.X
+	else
+		guiObject.Size = self._originalSize
 	end
 end
 
--- Retorna (alvoEscala, alvoGui): quando alvoEscala ~= nil o tween principal vai no UIScale
--- e um tween paralelo roda no gui. Quando nil, tudo vai num tween único no gui.
-function GuiAnimator:_construirAlvos(saindo: boolean)
+function GuiAnimator:_createGoals(isHiding: boolean)
 	local config = self._config
+	local position = if isHiding then self._originalPosition + (config.PositionOffset or UDim2.new()) else self._originalPosition
+	local transparency = if isHiding then config.StartTransparency else self._originalBackgroundTransparency
+	local guiGoals = { Position = position }
+	if config.AnimateBackground then
+		guiGoals.BackgroundTransparency = transparency
+	end
+	if self._styleName == "Flip" then
+		guiGoals.Size = if isHiding then self:_getScaledSize(config.StartScale) else self._originalSize
+		return nil, guiGoals
+	end
+	if config.StartScale then
+		return { Scale = if isHiding then config.StartScale.X else 1 }, guiGoals
+	end
+	guiGoals.Size = self._originalSize
+	return nil, guiGoals
+end
 
-	local posicaoFinal = saindo and (self._posicaoOriginal + (config.DeslocamentoOffset or UDim2.new()))
-		or self._posicaoOriginal
-	local transparenciaFinal = saindo and config.TransparenciaInicial or self._transparenciaOriginal
+function GuiAnimator:_play(isHiding: boolean, waitForSound: boolean)
+	local guiObject = self._gui
+	assert(guiObject, "[GuiAnimator] Cannot animate a destroyed animator.")
+	self:_cancelTweens()
+	if not isHiding then
+		guiObject.Visible = true
+		self:_applyInitialState()
+	end
 
-	if config.EscalaInicial and self._uiScale then
-		local alvoGui = { BackgroundTransparency = transparenciaFinal }
-		if config.DeslocamentoOffset then
-			alvoGui.Position = posicaoFinal
+	local config = self._config
+	local tweenInfo = TweenInfo.new(if isHiding then config.Duration * 0.85 else config.Duration, config.EasingStyle, if isHiding then Enum.EasingDirection.In else config.EasingDirection)
+	local scaleGoals, guiGoals = self:_createGoals(isHiding)
+	local primaryTween = tweenService:Create(scaleGoals and self:_ensureUiScale() or guiObject, tweenInfo, scaleGoals or guiGoals)
+	self._primaryTween = primaryTween
+	table.insert(self._activeTweens, primaryTween)
+	if scaleGoals then
+		table.insert(self._activeTweens, tweenService:Create(guiObject, tweenInfo, guiGoals))
+	end
+	for _, tween in ipairs(createDescendantTweens(
+		self._descendantTransparency,
+		config.StartTransparency,
+		if isHiding then 1 else 0,
+		tweenInfo,
+		config.AnimateBackground
+	)) do
+		table.insert(self._activeTweens, tween)
+	end
+
+	self.State = if isHiding then "Hiding" else "Showing"
+	primaryTween.Completed:Once(function(playbackState)
+		if self._primaryTween ~= primaryTween or playbackState ~= Enum.PlaybackState.Completed then
+			return
 		end
-		return { Scale = saindo and config.EscalaInicial.X or 1 }, alvoGui
+		self._primaryTween = nil
+		table.clear(self._activeTweens)
+		self.State = "Idle"
+		if isHiding and guiObject.Parent then
+			guiObject.Visible = false
+		end
+		if self._completionCallback then
+			self._completionCallback(self, if isHiding then "Hide" else "Show")
+		end
+	end)
+
+	for _, tween in ipairs(self._activeTweens) do
+		tween:Play()
 	end
-
-	local alvoGui = { Position = posicaoFinal, BackgroundTransparency = transparenciaFinal }
-
-	if self._estilo == "Flip" then
-		local escalaY = saindo and config.EscalaInicial.Y or 1
-		alvoGui.Size = UDim2.new(
-			self._tamanhoOriginal.X.Scale,
-			self._tamanhoOriginal.X.Offset,
-			self._tamanhoOriginal.Y.Scale * escalaY,
-			self._tamanhoOriginal.Y.Offset * escalaY
-		)
-	else
-		alvoGui.Size = self._tamanhoOriginal
-	end
-
-	return nil, alvoGui
+	playSound(if isHiding then config.HideSound else config.ShowSound, waitForSound)
 end
 
 return GuiAnimator

@@ -28,9 +28,12 @@ local POP_DISTANCE = 50
 local POP_LIFETIME = 2
 local POP_FADE_DELAY = POP_LIFETIME / 2
 local AIRDROP_MESSAGE_DURATION = 2
-local COLLECTION_DURATION = 0.35
+local COLLECTION_DURATION = 0.25
 local COLLECTION_ARC_HEIGHT = 0
 local COLLECTION_ROTATION = math.rad(180)
+local COLLECTION_TRAIL_NAME = "BananaCollectionTrail"
+local COLLECTION_TRAIL_LIFETIME = 0.18
+local COLLECTION_TRAIL_HALF_WIDTH = 0.1
 local MINIMUM_MODEL_SCALE = 0.001
 local BANANA_TAG = "SpawnedBanana"
 local ROTATION_SPEED = math.rad(60)
@@ -59,12 +62,6 @@ type CollectionPopup = {
 	elapsed: number,
 }
 
-type SoundData = {
-	soundId: string,
-	volume: number,
-	playbackSpeed: number,
-}
-
 type MatchEventData = {
 	action: string?,
 	currentAirdrop: number?,
@@ -74,7 +71,7 @@ type MatchEventData = {
 	duration: number?,
 	pos: Vector3?,
 	points: number?,
-	sound: SoundData?,
+	soundName: string?,
 }
 
 local collectingBananas: { [Model]: CollectionAnimation } = {}
@@ -144,11 +141,11 @@ local function showMessage(
 
 	local currentNotification = notificationIds[action]
 	airdropText.Text = `{text} {currentAirdrop}/{maxAirdrops}`
-	airdropAnimator:Play()
+	airdropAnimator:Show()
 
 	task.delay(AIRDROP_MESSAGE_DURATION, function()
 		if currentNotification == notificationIds[action] and airdropFrame.Parent then
-			airdropAnimator:Return()
+			airdropAnimator:Hide()
 		end
 	end)
 end
@@ -162,9 +159,11 @@ local function updateCollectionAnimations(deltaTime: number)
 
 		animation.elapsed = math.min(animation.elapsed + deltaTime, animation.duration)
 		local alpha = animation.elapsed / animation.duration
-		local moveAlpha = tweenService:GetValue(alpha, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		local moveAlpha = tweenService:GetValue(alpha, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 		local scaleAlpha = tweenService:GetValue(alpha, Enum.EasingStyle.Cubic, Enum.EasingDirection.In)
+		local remainingTime = animation.duration - animation.elapsed
 		local targetPosition = animation.targetPart.Position
+			+ animation.targetPart.AssemblyLinearVelocity * remainingTime
 		local position = animation.startPosition:Lerp(targetPosition, moveAlpha)
 			+ Vector3.yAxis * (math.sin(alpha * math.pi) * COLLECTION_ARC_HEIGHT)
 		local rotation = animation.startRotation * CFrame.Angles(0, COLLECTION_ROTATION * alpha, 0)
@@ -178,6 +177,45 @@ local function updateCollectionAnimations(deltaTime: number)
 	end
 end
 
+local function addCollectionTrail(banana: Model)
+	if banana:FindFirstChild(COLLECTION_TRAIL_NAME) then
+		return
+	end
+
+	local rootPart = banana.PrimaryPart or banana:FindFirstChildWhichIsA("BasePart", true)
+	if not rootPart then
+		return
+	end
+
+	local attachment0 = Instance.new("Attachment")
+	attachment0.Name = "CollectionTrailAttachment0"
+	attachment0.Position = Vector3.new(0, COLLECTION_TRAIL_HALF_WIDTH, 0)
+	attachment0.Parent = rootPart
+
+	local attachment1 = Instance.new("Attachment")
+	attachment1.Name = "CollectionTrailAttachment1"
+	attachment1.Position = Vector3.new(0, -COLLECTION_TRAIL_HALF_WIDTH, 0)
+	attachment1.Parent = rootPart
+
+	local trail = Instance.new("Trail")
+	trail.Name = COLLECTION_TRAIL_NAME
+	trail.Attachment0 = attachment0
+	trail.Attachment1 = attachment1
+	trail.Color = ColorSequence.new(Color3.fromRGB(255, 225, 35))
+	trail.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.1),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	trail.WidthScale = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	trail.Lifetime = COLLECTION_TRAIL_LIFETIME
+	trail.LightEmission = 0.75
+	trail.FaceCamera = true
+	trail.Parent = banana
+end
+
 local function animateBananaCollect(banana: Model, collector: Player, duration: number)
 	local character = collector.Character
 	local targetPart = character and character:FindFirstChild("HumanoidRootPart")
@@ -185,6 +223,7 @@ local function animateBananaCollect(banana: Model, collector: Player, duration: 
 		return
 	end
 
+	addCollectionTrail(banana)
 	local startPivot = banana:GetPivot()
 	collectingBananas[banana] = {
 		targetPart = targetPart,
@@ -355,8 +394,8 @@ function Controller.init()
 			if banana and collector and points and position then
 				local duration = data.duration or COLLECTION_DURATION
 				animateBananaCollect(banana, collector, duration)
-				if data.sound then
-					soundUtils.playSpatialData(data.sound, position)
+				if data.soundName then
+					soundUtils.playSpatial(data.soundName, position)
 				end
 
 				if collector == player then

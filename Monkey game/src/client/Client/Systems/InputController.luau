@@ -1,26 +1,46 @@
-local ContextActionService = game:GetService("ContextActionService")
-local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
+local contextActionService = game:GetService("ContextActionService")
+local players = game:GetService("Players")
 local replicatedStorage = game:GetService("ReplicatedStorage")
+local userInputService = game:GetService("UserInputService")
 
 local sharedFolder = replicatedStorage:WaitForChild("Shared")
 local eventsFolder = sharedFolder:WaitForChild("Events")
 local inputEvent = eventsFolder:WaitForChild("InputEvent") :: RemoteEvent
+local soundUtils = require(sharedFolder:WaitForChild("Utils"):WaitForChild("SoundUtils"))
 
-local player = Players.LocalPlayer
+local player = players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local gui = playerGui:WaitForChild("MobileSlap")
 local button: ImageButton = gui:WaitForChild("Mobile slap tool")
 
 local ACTION_NAME = "Punch"
+local PUNCH_COOLDOWN = 0.6
 local initialized = false
-local isMobile = UserInputService.TouchEnabled
-	and not (UserInputService.MouseEnabled and UserInputService.KeyboardEnabled)
+local isMobile = userInputService.TouchEnabled
+	and not (userInputService.MouseEnabled and userInputService.KeyboardEnabled)
+local lastSwingTime = 0
 
 local inputController = {}
 
+local function playLocalSwingSound()
+	local now = os.clock()
+	if now - lastSwingTime < PUNCH_COOLDOWN then
+		return
+	end
+
+	local character = player.Character
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+	if not rootPart or not rootPart:IsA("BasePart") then
+		return
+	end
+
+	lastSwingTime = now
+	soundUtils.playSpatial(soundUtils.names.slapSwing, rootPart.Position)
+end
+
 local function handlePunch(_, inputState: Enum.UserInputState): Enum.ContextActionResult
 	if inputState == Enum.UserInputState.Begin then
+		playLocalSwingSound()
 		inputEvent:FireServer(ACTION_NAME)
 	end
 
@@ -35,8 +55,8 @@ function inputController.init()
 
 	if not isMobile then
 		button.Visible = false
-		ContextActionService:BindAction(ACTION_NAME, handlePunch, true, Enum.UserInputType.MouseButton1)
-		ContextActionService:SetTitle(ACTION_NAME, "Punch")
+		contextActionService:BindAction(ACTION_NAME, handlePunch, true, Enum.UserInputType.MouseButton1)
+		contextActionService:SetTitle(ACTION_NAME, "Punch")
 		return
 	end
 

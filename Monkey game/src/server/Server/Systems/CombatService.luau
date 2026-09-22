@@ -18,11 +18,10 @@ local matchEvent = eventsFolder:WaitForChild("MatchEvent") :: RemoteEvent
 
 local assetsFolder = serverStorage:WaitForChild("Assets")
 local vfxFolder = assetsFolder:FindFirstChild("VFX")
-local soundsFolder = serverStorage:FindFirstChild("Sounds")
 
 local glovesFolder = assetsFolder:WaitForChild("SlapGloves")
-local _normalGlovesFolder = glovesFolder:WaitForChild("Normal")
-local _pastelGlovesFolder = glovesFolder:WaitForChild("Pastel")
+local normalGlovesFolder = glovesFolder:WaitForChild("Normal")
+local pastelGlovesFolder = glovesFolder:WaitForChild("Pastel")
 
 local ACTION_NAME = "Punch"
 local EQUIPPED_GLOVE_ATTRIBUTE = "EquippedGlove"
@@ -31,7 +30,7 @@ local REST_GLOVE_MOTOR_NAME = "CombatGloveRestMotor"
 local ATTACK_GLOVE_MOTOR_NAME = "CombatGloveAttackMotor"
 local DEFAULT_GLOVE = "Slap Glove Normal"
 local PUNCH_ANIMATION_ID = "rbxassetid://110154207964571"
-local PUNCH_ANIMATION_SPEED = 0.75
+local PUNCH_ANIMATION_SPEED = 0.85
 local PUNCH_COOLDOWN = 0.6
 local HITBOX_RADIUS = 13
 local HITBOX_ANGLE = 135
@@ -39,13 +38,12 @@ local HITBOX_COS_THRESHOLD = math.cos(math.rad(HITBOX_ANGLE / 2))
 local MATCH_BANANAS_FOLDER = "MatchBananas"
 local HIT_VFX_NAME = "HitVFX"
 local IFRAME_VFX_NAME = "IFrameVFX"
-local HIT_VFX_LIFETIME = 1.25
-local RAGDOLL_DURATION = 2.5
-local RECOVERY_IFRAME_DURATION = 3
-local KNOCKBACK_HORIZONTAL_SPEED = 30
-local KNOCKBACK_UPWARD_SPEED = 12
-local KNOCKBACK_TILT_SPEED = 4
-local SERVER_OWNERSHIP_DURATION = 0.2
+local RAGDOLL_DURATION = 4.6
+local RECOVERY_IFRAME_DURATION = 2
+local IFRAME_VFX_LIFETIME = RAGDOLL_DURATION + RECOVERY_IFRAME_DURATION
+local HIT_VFX_LIFETIME = RAGDOLL_DURATION
+local KNOCKBACK_HORIZONTAL_SPEED = 24
+local KNOCKBACK_UPWARD_SPEED = 6
 local HIT_VFX_HEIGHT = 1
 local GLOVE_MOTOR_NAMES = {
 	[REST_GLOVE_MOTOR_NAME] = true,
@@ -62,7 +60,6 @@ punchAnimation.AnimationId = PUNCH_ANIMATION_ID
 
 type GloveStatus = "Idle" | "Attacking"
 type StunResult = "Hit" | "Blocked" | "Invalid"
-
 type PlayerState = {
 	character: Model,
 	rootPart: BasePart,
@@ -78,13 +75,11 @@ type PlayerState = {
 	status: GloveStatus,
 	attackId: number,
 }
-
 type TargetState = {
 	character: Model,
 	recoveryId: number,
 	invulnerableUntil: number,
 }
-
 type CombatService = {
 	equipGlove: (player: Player, gloveName: string) -> boolean,
 	init: () -> (),
@@ -96,14 +91,32 @@ local lastPunchTimes: { [Player]: number } = {}
 local targetStates: { [Player]: TargetState } = {}
 local combatService: CombatService = {} :: CombatService
 
-local function getGloveTemplate(gloveName: string, gloveFolder: Folder): Tool?
-	gloveFolder = gloveFolder or glovesFolder
-	local template = gloveFolder:FindFirstChild(gloveName)
+local function getGloveFolder(folderName)
+	if folderName == "Pastel" then
+		return pastelGlovesFolder
+	end
+
+	return normalGlovesFolder
+end
+
+local function getGloveTemplate(gloveName: string, gloveFolder: Folder?): Tool?
+	local selectedFolder = gloveFolder or normalGlovesFolder
+	local template = selectedFolder:FindFirstChild(gloveName)
 	if template and template:IsA("Tool") then
 		return template
 	end
 
 	return nil
+end
+
+local function getSavedGlove(player: Player)
+	local gloveName = player:GetAttribute(EQUIPPED_GLOVE_ATTRIBUTE)
+	local gloveFolder = getGloveFolder(player:GetAttribute("EquippedGloveFolder"))
+	if typeof(gloveName) ~= "string" or not getGloveTemplate(gloveName, gloveFolder) then
+		return DEFAULT_GLOVE, normalGlovesFolder
+	end
+
+	return gloveName, gloveFolder
 end
 
 local function getRightArm(character: Model): BasePart?
@@ -218,6 +231,7 @@ local function findClosestTarget(state: PlayerState): (Player?, BasePart?)
 	if horizontalLookVector.Magnitude <= 0 then
 		return nil, nil
 	end
+	
 	horizontalLookVector = horizontalLookVector.Unit
 	local closestPlayer: Player? = nil
 	local closestRoot: BasePart? = nil
@@ -342,7 +356,9 @@ local function attachIFrameVfx(character: Model, attachmentPart: BasePart)
 		weldToPart(vfx, attachmentPart)
 	elseif vfx:IsA("Model") then
 		vfx.Parent = character
-		vfx:PivotTo(attachmentPart.CFrame * vfx:GetPivot().Rotation)
+		local boundsCFrame = vfx:GetBoundingBox()
+		local centeredPosition = attachmentPart.Position - boundsCFrame.Position
+		vfx:PivotTo(CFrame.new(centeredPosition) * vfx:GetPivot())
 		for _, descendant in ipairs(vfx:GetDescendants()) do
 			if descendant:IsA("BasePart") then
 				prepareAttachedPart(descendant)
@@ -355,25 +371,32 @@ local function attachIFrameVfx(character: Model, attachmentPart: BasePart)
 		vfx.Parent = attachmentPart
 	end
 
-	debris:AddItem(vfx, RECOVERY_IFRAME_DURATION)
+	debris:AddItem(vfx, IFRAME_VFX_LIFETIME)
 end
 
 local function playCombatSound(soundName: string, position: Vector3)
-	if not soundsFolder then
-		return
-	end
+	matchEvent:FireAllClients({
+		action = "PlaySpatialSound",
+		soundName = soundName,
+		position = position,
+	})
+end
 
-	local soundData = soundUtils.getNamedData(soundsFolder, soundName)
-	if soundData then
-		matchEvent:FireAllClients({
-			action = "PlaySpatialSound",
-			sound = soundData,
-			position = position,
-		})
+local function playCombatSoundToOthers(excludedPlayer: Player, soundName: string, position: Vector3)
+	local eventData = {
+		action = "PlaySpatialSound",
+		soundName = soundName,
+		position = position,
+	}
+
+	for _, player in ipairs(players:GetPlayers()) do
+		if player ~= excludedPlayer then
+			matchEvent:FireClient(player, eventData)
+		end
 	end
 end
 
-local function applyKnockback(attackerRoot: BasePart, character: Model, targetRoot: BasePart)
+local function applyKnockback(attackerRoot: BasePart, humanoid: Humanoid, targetRoot: BasePart)
 	local direction = targetRoot.Position - attackerRoot.Position
 	direction = Vector3.new(direction.X, 0, direction.Z)
 	if direction.Magnitude <= 0 then
@@ -384,34 +407,8 @@ local function applyKnockback(attackerRoot: BasePart, character: Model, targetRo
 		return
 	end
 
-	if targetRoot:CanSetNetworkOwnership() then
-		targetRoot:SetNetworkOwner(nil)
-	end
-
 	local velocityChange = direction.Unit * KNOCKBACK_HORIZONTAL_SPEED + Vector3.yAxis * KNOCKBACK_UPWARD_SPEED
-	local movedAssemblies: { [BasePart]: boolean } = {}
-	for _, descendant in ipairs(character:GetDescendants()) do
-		if descendant:IsA("BasePart") then
-			local assemblyRoot = descendant.AssemblyRootPart
-			if not movedAssemblies[assemblyRoot] then
-				movedAssemblies[assemblyRoot] = true
-				assemblyRoot:ApplyImpulse(velocityChange * assemblyRoot.AssemblyMass)
-			end
-		end
-	end
-
-	local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
-	if torso and torso:IsA("BasePart") then
-		local tiltImpulse = direction.Unit * KNOCKBACK_TILT_SPEED * torso.AssemblyMass
-		local impulsePosition = torso.AssemblyCenterOfMass + Vector3.yAxis * (torso.Size.Y * 0.4)
-		torso:ApplyImpulseAtPosition(tiltImpulse, impulsePosition)
-	end
-
-	task.delay(SERVER_OWNERSHIP_DURATION, function()
-		if targetRoot.Parent and targetRoot:CanSetNetworkOwnership() then
-			targetRoot:SetNetworkOwnershipAuto()
-		end
-	end)
+	ragdollUtils.applyImpulse(humanoid, velocityChange)
 end
 
 local function stunTarget(attackerState: PlayerState, targetPlayer: Player, targetRoot: BasePart): StunResult
@@ -427,7 +424,7 @@ local function stunTarget(attackerState: PlayerState, targetPlayer: Player, targ
 		and previousTargetState.character == character
 		and now < previousTargetState.invulnerableUntil
 	then
-		playCombatSound(soundUtils.Names.SlapBlocked, targetRoot.Position)
+		playCombatSound(soundUtils.names.slapBlocked, targetRoot.Position)
 		return "Blocked"
 	end
 
@@ -446,12 +443,11 @@ local function stunTarget(attackerState: PlayerState, targetPlayer: Player, targ
 	}
 	targetStates[targetPlayer] = targetState
 
-	local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
-	local vfxParent = if torso and torso:IsA("BasePart") then torso else targetRoot
+	local vfxParent = getRestPart(character) or targetRoot
 	attachIFrameVfx(character, vfxParent)
-	applyKnockback(attackerState.rootPart, character, targetRoot)
+	applyKnockback(attackerState.rootPart, humanoid, targetRoot)
 	playHitVfx(getHitVfxPosition(character, targetRoot))
-	playCombatSound(soundUtils.Names.SlapHit, targetRoot.Position)
+	playCombatSound(soundUtils.names.slapHit, targetRoot.Position)
 
 	task.delay(RAGDOLL_DURATION, function()
 		local currentState = targetStates[targetPlayer]
@@ -564,9 +560,9 @@ local function mountGlove(state: PlayerState, status: GloveStatus)
 	state.status = status
 end
 
-local function replaceGlove(player: Player, gloveName: string): boolean
+local function replaceGlove(player: Player, gloveName: string, gloveFolder: Folder): boolean
 	local state = playerStates[player]
-	local template = getGloveTemplate(gloveName)
+	local template = getGloveTemplate(gloveName, gloveFolder)
 	if not state or not template then
 		return false
 	end
@@ -621,14 +617,10 @@ local function replaceGlove(player: Player, gloveName: string): boolean
 end
 
 local function attachSelectedGlove(player: Player)
-	local equippedGlove = player:GetAttribute(EQUIPPED_GLOVE_ATTRIBUTE)
-	local gloveName = if typeof(equippedGlove) == "string" then equippedGlove else DEFAULT_GLOVE
-	if not getGloveTemplate(gloveName) then
-		gloveName = DEFAULT_GLOVE
-		player:SetAttribute(EQUIPPED_GLOVE_ATTRIBUTE, gloveName)
-	end
+	local gloveName, gloveFolder = getSavedGlove(player)
 
-	replaceGlove(player, gloveName)
+	player:SetAttribute(EQUIPPED_GLOVE_ATTRIBUTE, gloveName)
+	replaceGlove(player, gloveName, gloveFolder)
 end
 
 local function finishPunch(player: Player, state: PlayerState, attackId: number)
@@ -667,7 +659,7 @@ local function startPunch(player: Player)
 	state.attackId += 1
 	local attackId = state.attackId
 	mountGlove(state, "Attacking")
-	playCombatSound(soundUtils.Names.SlapSwing, state.rootPart.Position)
+	playCombatSoundToOthers(player, soundUtils.names.slapSwing, state.rootPart.Position)
 	hitClosestTarget(player, state)
 
 	animationTrack.Stopped:Once(function()
@@ -709,22 +701,36 @@ local function onCharacterAdded(player: Player, character: Model)
 		playerStates[player] = state
 		lastPunchTimes[player] = nil
 
+		ragdollUtils.prepare(humanoid, GLOVE_MOTOR_NAMES)
 		attachSelectedGlove(player)
 		state.animationTrack = loadPunchTrack(humanoid)
 	end)
 end
 
 local function onPlayerAdded(player: Player)
-	local selectedGlove = player:GetAttribute(EQUIPPED_GLOVE_ATTRIBUTE)
-	if typeof(selectedGlove) ~= "string" or not getGloveTemplate(selectedGlove) then
-		player:SetAttribute(EQUIPPED_GLOVE_ATTRIBUTE, DEFAULT_GLOVE)
+	local function applySavedGlove()
+		if player:GetAttribute("DataLoaded") ~= true then
+			return
+		end
+
+		local state = playerStates[player]
+		local gloveName, gloveFolder = getSavedGlove(player)
+		player:SetAttribute(EQUIPPED_GLOVE_ATTRIBUTE, gloveName)
+
+		if state and state.gloveName ~= gloveName then
+			replaceGlove(player, gloveName, gloveFolder)
+		end
 	end
+
+	player:GetAttributeChangedSignal("DataLoaded"):Connect(applySavedGlove)
+	player:GetAttributeChangedSignal("EquippedGloveFolder"):Connect(applySavedGlove)
 
 	player:GetAttributeChangedSignal(EQUIPPED_GLOVE_ATTRIBUTE):Connect(function()
 		local gloveName = player:GetAttribute(EQUIPPED_GLOVE_ATTRIBUTE)
 		local state = playerStates[player]
+		local _, gloveFolder = getSavedGlove(player)
 		if typeof(gloveName) == "string" and state and state.gloveName ~= gloveName then
-			replaceGlove(player, gloveName)
+			replaceGlove(player, gloveName, gloveFolder)
 		end
 	end)
 
@@ -735,10 +741,13 @@ local function onPlayerAdded(player: Player)
 	if player.Character then
 		onCharacterAdded(player, player.Character)
 	end
+
+	applySavedGlove()
 end
 
 function combatService.equipGlove(player: Player, gloveName: string): boolean
-	if player.Parent ~= players or not getGloveTemplate(gloveName) then
+	local _, gloveFolder = getSavedGlove(player)
+	if player.Parent ~= players or not getGloveTemplate(gloveName, gloveFolder) then
 		return false
 	end
 
@@ -746,7 +755,7 @@ function combatService.equipGlove(player: Player, gloveName: string): boolean
 	local glove = state and state.glove
 	if player:GetAttribute(EQUIPPED_GLOVE_ATTRIBUTE) == gloveName then
 		if state and (state.gloveName ~= gloveName or not glove or not glove.Parent) then
-			return replaceGlove(player, gloveName)
+			return replaceGlove(player, gloveName, gloveFolder)
 		end
 
 		return true
