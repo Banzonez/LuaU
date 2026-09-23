@@ -4,11 +4,9 @@ local players = game:GetService("Players")
 local player = players.LocalPlayer
 local gameSettings = UserSettings().GameSettings
 
-local AIR_TURN_RATE = math.rad(900)
-local AIR_TURN_GAIN = 10
-local AIR_TURN_ACCELERATION = math.rad(9000)
-local AIR_TURN_MAX_TORQUE = 10000000
-local MINIMUM_JUMPING_DURATION = 0.1
+local AIR_TURN_RATE = math.rad(1800)
+local AIR_TURN_RESPONSIVENESS = 80
+local AIR_TURN_MAX_TORQUE = 100000
 local MINIMUM_MOVE_DIRECTION_MAGNITUDE = 0.001
 
 local airTurn = {}
@@ -27,29 +25,29 @@ function airTurn.enable(humanoid: Humanoid): () -> ()
 	airTurnAttachment.Name = "AirTurnAttachment"
 	airTurnAttachment.Parent = humanoidRootPart
 
-	local airTurnAngularVelocity = Instance.new("AngularVelocity")
-	airTurnAngularVelocity.Name = "AirTurnAngularVelocity"
-	airTurnAngularVelocity.Attachment0 = airTurnAttachment
-	airTurnAngularVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
-	airTurnAngularVelocity.MaxTorque = AIR_TURN_MAX_TORQUE
-	airTurnAngularVelocity.Enabled = false
-	airTurnAngularVelocity.Parent = humanoidRootPart
+	local airTurnAlignOrientation = Instance.new("AlignOrientation")
+	airTurnAlignOrientation.Name = "AirTurnAlignOrientation"
+	airTurnAlignOrientation.Mode = Enum.OrientationAlignmentMode.OneAttachment
+	airTurnAlignOrientation.AlignType = Enum.AlignType.AllAxes
+	airTurnAlignOrientation.Attachment0 = airTurnAttachment
+	airTurnAlignOrientation.MaxAngularVelocity = AIR_TURN_RATE
+	airTurnAlignOrientation.MaxTorque = AIR_TURN_MAX_TORQUE
+	airTurnAlignOrientation.Responsiveness = AIR_TURN_RESPONSIVENESS
+	airTurnAlignOrientation.Enabled = false
+	airTurnAlignOrientation.Parent = humanoidRootPart
 
 	local enabled = true
 	local connections: { RBXScriptConnection } = {}
 	local autoRotateBeforeAir: boolean? = nil
 	local currentState = humanoid:GetState()
-	local jumpingStartedAt: number? = if currentState == Enum.HumanoidStateType.Jumping then os.clock() else nil
-	local jumpQualified = false
 
 	local function setAirTurnEnabled(shouldEnable: boolean)
-		if shouldEnable and not airTurnAngularVelocity.Enabled then
+		if shouldEnable and not airTurnAlignOrientation.Enabled then
 			autoRotateBeforeAir = humanoid.AutoRotate
 			humanoid.AutoRotate = false
-			airTurnAngularVelocity.Enabled = true
-		elseif not shouldEnable and airTurnAngularVelocity.Enabled then
-			airTurnAngularVelocity.Enabled = false
-			airTurnAngularVelocity.AngularVelocity = Vector3.zero
+			airTurnAlignOrientation.Enabled = true
+		elseif not shouldEnable and airTurnAlignOrientation.Enabled then
+			airTurnAlignOrientation.Enabled = false
 			if humanoidRootPart.Parent then
 				local angularVelocity = humanoidRootPart.AssemblyAngularVelocity
 				humanoidRootPart.AssemblyAngularVelocity = Vector3.new(angularVelocity.X, 0, angularVelocity.Z)
@@ -64,39 +62,23 @@ function airTurn.enable(humanoid: Humanoid): () -> ()
 		end
 	end
 
-	local function updateAirTurn(deltaTime: number)
-		if currentState == Enum.HumanoidStateType.Jumping and jumpingStartedAt then
-			jumpQualified = jumpQualified or os.clock() - jumpingStartedAt >= MINIMUM_JUMPING_DURATION
-		end
-
+	local function updateAirTurn()
 		local isAirborne = currentState == Enum.HumanoidStateType.Jumping
 			or currentState == Enum.HumanoidStateType.Freefall
 		local cameraControlsRotation = gameSettings.RotationType == Enum.RotationType.CameraRelative
-		if not isAirborne or not jumpQualified or cameraControlsRotation or humanoid.PlatformStand or humanoid.Health <= 0 then
+		if not isAirborne or cameraControlsRotation or humanoid.PlatformStand or humanoid.Health <= 0 then
 			setAirTurnEnabled(false)
 			return
 		end
 
 		local moveDirection = humanoid.MoveDirection
 		local horizontalMoveDirection = Vector3.new(moveDirection.X, 0, moveDirection.Z)
-		local lookDirection = humanoidRootPart.CFrame.LookVector
-		local horizontalLookDirection = Vector3.new(lookDirection.X, 0, lookDirection.Z)
-		if
-			horizontalMoveDirection.Magnitude < MINIMUM_MOVE_DIRECTION_MAGNITUDE
-			or horizontalLookDirection.Magnitude < MINIMUM_MOVE_DIRECTION_MAGNITUDE
-		then
+		if horizontalMoveDirection.Magnitude < MINIMUM_MOVE_DIRECTION_MAGNITUDE then
 			setAirTurnEnabled(false)
 			return
 		end
 
-		local facingDirection = horizontalLookDirection.Unit
-		local targetDirection = horizontalMoveDirection.Unit
-		local yawError = math.atan2(facingDirection:Cross(targetDirection).Y, facingDirection:Dot(targetDirection))
-		local desiredTurnRate = math.clamp(yawError * AIR_TURN_GAIN, -AIR_TURN_RATE, AIR_TURN_RATE)
-		local currentTurnRate = airTurnAngularVelocity.AngularVelocity.Y
-		local maxRateChange = AIR_TURN_ACCELERATION * deltaTime
-		local turnRate = currentTurnRate + math.clamp(desiredTurnRate - currentTurnRate, -maxRateChange, maxRateChange)
-		airTurnAngularVelocity.AngularVelocity = Vector3.yAxis * turnRate
+		airTurnAlignOrientation.CFrame = CFrame.lookAt(Vector3.zero, horizontalMoveDirection.Unit)
 		setAirTurnEnabled(true)
 	end
 
@@ -107,7 +89,7 @@ function airTurn.enable(humanoid: Humanoid): () -> ()
 
 		enabled = false
 		setAirTurnEnabled(false)
-		airTurnAngularVelocity:Destroy()
+		airTurnAlignOrientation:Destroy()
 		airTurnAttachment:Destroy()
 
 		for _, connection in pairs(connections) do
@@ -121,17 +103,7 @@ function airTurn.enable(humanoid: Humanoid): () -> ()
 		connections,
 		humanoid.StateChanged:Connect(function(_, newState)
 			currentState = newState
-			if newState == Enum.HumanoidStateType.Jumping then
-				jumpingStartedAt = os.clock()
-				jumpQualified = false
-				setAirTurnEnabled(false)
-			elseif newState == Enum.HumanoidStateType.Freefall then
-				if jumpingStartedAt then
-					jumpQualified = jumpQualified or os.clock() - jumpingStartedAt >= MINIMUM_JUMPING_DURATION
-				end
-			else
-				jumpingStartedAt = nil
-				jumpQualified = false
+			if newState ~= Enum.HumanoidStateType.Jumping and newState ~= Enum.HumanoidStateType.Freefall then
 				setAirTurnEnabled(false)
 			end
 		end)
