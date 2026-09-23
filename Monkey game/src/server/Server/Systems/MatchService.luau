@@ -21,7 +21,7 @@ local crownTemplate = assetsFolder:FindFirstChild("Crown") :: Accessory
 
 local intermissionModel = workspace:FindFirstChild("Lobby") :: Model
 
-local INTERMISSION_DURATION = 10 -- 30
+local INTERMISSION_DURATION = 30 -- 30
 local MATCH_DURATION = 5 * 60 -- 5 minutes
 local MATCH_START_COUNTDOWN = 3
 local RESPAWN_IN_MATCH = true -- Set to false to leave match respawning to your game.
@@ -175,6 +175,16 @@ local function getParticipatingPlayers(): { Player }
 	end
 
 	return currentParticipants
+end
+
+local function getParticipatingPlayerCount(): number
+	local count = 0
+	for player in pairs(participatingPlayers) do
+		if player.Parent == players then
+			count += 1
+		end
+	end
+	return count
 end
 
 local function prepareMatchBananas(player: Player)
@@ -527,7 +537,7 @@ local function runMatch()
 			sendSound(player, soundUtils.names.teleportToMatch)
 		end
 	end
-	task.spawn(bananasSpawner.spawnBananasInMap, selectedMap, MATCH_DURATION)
+	task.spawn(bananasSpawner.spawnBananasInMap, selectedMap, MATCH_DURATION, getParticipatingPlayerCount)
 	task.spawn(colorCorrectionEffect, 3)
 	task.spawn(prepareHighlight, playersForMatch, 4)
 

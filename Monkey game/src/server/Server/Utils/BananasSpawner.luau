@@ -66,7 +66,7 @@ type SpawnContext = {
 }
 
 type BananaSpawner = {
-	spawnBananasInMap: (map: Model, matchDuration: number) -> (),
+	spawnBananasInMap: (map: Model, matchDuration: number, getParticipantCount: () -> number) -> (),
 	spawnDroppedBananas: (position: Vector3, amount: number, targetPlayer: Player) -> number,
 	canCollectDroppedBanana: (banana: Model, player: Player) -> boolean,
 	getDroppedBananaRotation: (banana: Model) -> CFrame?,
@@ -110,7 +110,7 @@ local function getSpawnedBananaCount(context: SpawnContext): number
 	local count = 0
 
 	for _, banana in ipairs(context.container:GetChildren()) do
-		if banana:GetAttribute(DROPPED_BANANA_ATTRIBUTE) ~= true then
+		if bananaConfig.COUNT_DROPPED_BANANAS_IN_MAX or banana:GetAttribute(DROPPED_BANANA_ATTRIBUTE) ~= true then
 			count += 1
 		end
 	end
@@ -442,17 +442,22 @@ local function createContext(map: Model, matchDuration: number): SpawnContext
 	}
 end
 
-function bananaSpawner.spawnBananasInMap(map: Model, matchDuration: number)
+function bananaSpawner.spawnBananasInMap(map: Model, matchDuration: number, getParticipantCount: () -> number)
 	local context = createContext(map, matchDuration)
 	activeContext = context
 
-	for _ = 1, bananaConfig.MAX_BANANAS_SPAWNED do
+	local initialMaximum = bananaConfig.MAX_BANANAS_SPAWNED
+		+ bananaConfig.BANANAS_PER_MATCH_PLAYER * getParticipantCount()
+	for _ = 1, initialMaximum do
 		spawnBanana(context, nil)
 	end
 
 	local elapsedTime = 0
 	while map.Parent do
-		task.wait(bananaConfig.SPAWN_RATE)
+		local participantCount = getParticipantCount()
+		local spawnInterval = bananaConfig.SPAWN_RATE
+			/ (1 - bananaConfig.SPAWN_RATE_BONUS_PER_MATCH_PLAYER * participantCount)
+		task.wait(spawnInterval)
 		if not map.Parent then
 			break
 		end
@@ -463,7 +468,9 @@ function bananaSpawner.spawnBananasInMap(map: Model, matchDuration: number)
 			processGuaranteedSpawns(context, elapsedTime)
 		end
 
-		if getSpawnedBananaCount(context) < bananaConfig.MAX_BANANAS_SPAWNED then
+		local maximum = bananaConfig.MAX_BANANAS_SPAWNED
+			+ bananaConfig.BANANAS_PER_MATCH_PLAYER * getParticipantCount()
+		if getSpawnedBananaCount(context) < maximum then
 			spawnBanana(context, nil)
 		end
 	end
