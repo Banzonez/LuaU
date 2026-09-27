@@ -11,21 +11,21 @@ local utilsFolder = ServerScriptService:WaitForChild("Server"):WaitForChild("Mod
 local combatStyles = utilsFolder:WaitForChild("CombatStyles")
 local StateHandler = require(script.Parent:WaitForChild("CombatStateHandler"))
 
-local playerObjs: { [Player]: Types.CombatObject } = {}
+local playerObjs: { [Player]: { [string]: any } } = {}
 
-local function createStyle(player: Player, styleName: string, settings: Types.StyleSettings?): Types.CombatStyle?
+local function createStyle(player: Player, styleName: string, settings: Types.StyleSettings?)
 	local styleModule = combatStyles:FindFirstChild(styleName)
 	if not styleModule or not styleModule:IsA("ModuleScript") then
 		warn("Combat style not found: " .. styleName .. ".")
 		return nil
 	end
 
-	local styleFactory = require(styleModule) :: Types.CombatStyleModule
+	local styleFactory = require(styleModule)
 	return styleFactory.new(player, settings)
 end
 
 function setup.SetStyle(
-	self: Types.CombatObject,
+	self,
 	player: Player,
 	styleName: string,
 	settings: Types.StyleSettings?
@@ -41,11 +41,11 @@ function setup.SetStyle(
 	return true
 end
 
-function setup:CreateObj(player: Player, settings: Types.StyleSettings?): Types.CombatObject
+function setup:CreateObj(player: Player, settings: Types.StyleSettings?)
 	local style = createStyle(player, "MuayThai", settings)
 	assert(style, "Could not create the default combat style.")
 
-	local combat: Types.CombatObject = {
+	local combat = {
 		Style = style,
 		Settings = style.Settings,
 		State = StateHandler:GetPlayerState(player),
@@ -56,7 +56,7 @@ function setup:CreateObj(player: Player, settings: Types.StyleSettings?): Types.
 	return combat
 end
 
-function setup:GetPlayerObj(player: Player): Types.CombatObject?
+function setup:GetPlayerObj(player: Player)
 	return playerObjs[player]
 end
 

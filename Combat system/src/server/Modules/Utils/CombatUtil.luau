@@ -9,10 +9,21 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local Types = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Types"))
 local StateHandler = require(
-	ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("Systems"):WaitForChild("CombatStateHandler")
+	ServerScriptService:WaitForChild("Server")
+		:WaitForChild("Modules")
+		:WaitForChild("Systems")
+		:WaitForChild("CombatStateHandler")
 )
 
-local tracks: { [Player]: Types.PlayerAnimationCache } = {}
+local debug = true
+
+local tracks: {
+	[Player]: {
+		Animator: Animator,
+		Tracks: { [Animation]: AnimationTrack },
+		PlayingTrack: AnimationTrack?,
+	},
+} = {}
 local hitConnections: { [Player]: RBXScriptConnection } = {}
 local stoppedConnections: { [Player]: RBXScriptConnection } = {}
 local attackIds: { [Player]: number } = {}
@@ -71,7 +82,7 @@ local function getTargetData(part: BasePart): (Humanoid?, BasePart?)
 end
 
 function utils.preloadAnimations(folder: Instance): ()
-	local animations = {} :: { Animation }
+	local animations: { Animation } = {}
 
 	for _, instance in ipairs(folder:GetDescendants()) do
 		if instance:IsA("Animation") then
@@ -101,7 +112,11 @@ function utils.getAnimationDuration(player: Player, animation: Animation): numbe
 		clearTracks(player)
 	end
 
-	local playerTracks: Types.PlayerAnimationCache
+	local playerTracks: {
+		Animator: Animator,
+		Tracks: { [Animation]: AnimationTrack },
+		PlayingTrack: AnimationTrack?,
+	}
 	if cachedTracks and cachedTracks.Animator == animator then
 		playerTracks = cachedTracks
 	else
@@ -129,20 +144,44 @@ function utils.getAnimationDuration(player: Player, animation: Animation): numbe
 	end
 
 	if track.Length <= 0 then
-		warn("Could not load the duration of " .. animation.Name .. " for " .. player.Name .. ". Check its AnimationId and permissions.")
+		warn(
+			"Could not load the duration of "
+				.. animation.Name
+				.. " for "
+				.. player.Name
+				.. ". Check its AnimationId and permissions."
+		)
 		return nil
 	end
 
 	return track.Length
 end
 
-function utils.attack(
-	player: Player,
-	maxAngle: number,
-	damage: number,
-	stunTime: number,
-	hitboxRadius: number
-): ()
+function utils.hitboxDebug(center, size, parent)
+	if not debug then return end
+
+	local possibleHitbox = parent:FindFirstChild("HitboxDebug")
+	if possibleHitbox then
+		possibleHitbox.Position = center
+		possibleHitbox.Transparency = 0.5
+		task.wait(0.3)
+		possibleHitbox.Transparency = 1
+		return
+	end
+
+	local hitbox = Instance.new("Part")
+	hitbox.Name = "HitboxDebug"
+	hitbox.Size = size
+	hitbox.Transparency = 0.5
+	hitbox.Color = Color3.fromRGB(165, 13, 13)
+	hitbox.Anchored = true
+	hitbox.CanCollide = false
+	hitbox.Parent = parent
+
+	utils.hitboxDebug(center, size, parent)
+end
+
+function utils.attack(player: Player, maxAngle: number, damage: number, stunTime: number, hitboxRadius: number): ()
 	local character = player.Character
 	if not character then
 		return
@@ -164,8 +203,13 @@ function utils.attack(
 	local closestHumanoid: Humanoid? = nil
 	local closestDistance = math.huge
 	local cosThreshold = math.cos(math.rad(maxAngle))
+	local cf = attackerRoot.CFrame + attackerRoot.CFrame.LookVector * 3
+	local center = Vector3.new(cf.X, cf.Y, cf.Z)
 
-	for _, part in ipairs(workspace:GetPartBoundsInRadius(attackerRoot.Position, hitboxRadius, overlapParams)) do
+	local hitboxSize = Vector3.new(hitboxRadius, hitboxRadius, hitboxRadius)
+	task.spawn(utils.hitboxDebug, center, hitboxSize, workspace)
+
+	for _, part in ipairs(workspace:GetPartBoundsInRadius(center, hitboxRadius, overlapParams)) do
 		local targetHumanoid, targetRoot = getTargetData(part)
 		if not targetHumanoid or not targetRoot or targetHumanoid == attackerHumanoid or targetHumanoid.Health <= 0 then
 			continue
@@ -184,7 +228,6 @@ function utils.attack(
 		end
 	end
 
-	print("Attacked: ", closestHumanoid, "at distance: ", closestDistance)
 	if closestHumanoid then
 		closestHumanoid:TakeDamage(damage)
 		StateHandler:StunHumanoid(closestHumanoid, stunTime)

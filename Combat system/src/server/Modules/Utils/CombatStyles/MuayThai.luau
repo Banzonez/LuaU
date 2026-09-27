@@ -20,7 +20,7 @@ local function styleSettings(): Types.StyleSettings
 		ClickCooldown = 0.1,
 		ComboResetTime = 1.25,
 		ClicksToFinishCombo = 4,
-		HitboxRadius = 5,
+		HitboxRadius = 4,
 		MAX_ANGLE_DEGREES = 60,
 		ClickDamage = 5,
 		ClickStunTime = 0.05,
@@ -40,31 +40,21 @@ local function styleSettings(): Types.StyleSettings
 	}
 end
 
-function basicStyle.new(player: Player, settings: Types.StyleSettings?): Types.CombatStyle
-	local self = {} :: Types.CombatStyle
+function basicStyle.new(player: Player, settings: Types.StyleSettings?)
+	return {
+		Player = player,
+		Settings = settings or styleSettings(),
+		StyleName = "MuayThai",
+		Abilities = {
+			["1"] = function() end,
 
-	self.Player = player
-	self.Settings = settings or styleSettings()
-	self.StyleName = "MuayThai"
-	self.Abilities = {
-		["1"] = function()
-			return "success"
-		end,
+			["2"] = function() end,
 
-		["2"] = function()
-			return "success"
-		end,
+			["3"] = function() end,
 
-		["3"] = function()
-			return "success"
-		end,
-
-		["4"] = function()
-			return "success"
-		end,
+			["4"] = function() end,
+		},
 	}
-
-	return self
 end
 
 return basicStyle
