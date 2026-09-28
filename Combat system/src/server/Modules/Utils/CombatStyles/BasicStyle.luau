@@ -44,7 +44,7 @@ function basicStyle.new(player: Player, settings: Types.StyleSettings?)
 	return {
 		Player = player,
 		Settings = settings or styleSettings(),
-		StyleName = "MuayThai",
+		StyleName = "BasicStyle",
 		Abilities = {
 			["1"] = function() end,
 

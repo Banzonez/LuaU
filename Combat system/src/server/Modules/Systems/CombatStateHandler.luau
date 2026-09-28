@@ -12,11 +12,18 @@ type StunData = {
 	AutoRotate: boolean,
 }
 
+type StateHandler = {
+	init: () -> (),
+	GetPlayerState: (self: StateHandler, player: Player) -> Types.PlayerCombatState,
+	SetTemporaryState: (self: StateHandler, player: Player, state: Types.CombatState, duration: number) -> (),
+	StunHumanoid: (self: StateHandler, humanoid: Humanoid, duration: number) -> (),
+}
+
 local playerStates: { [Player]: Types.PlayerCombatState } = {}
 local stateTokens: { [Player]: number } = {}
 local stunTokens: { [Humanoid]: number } = {}
 local stunData: { [Humanoid]: StunData } = {}
-local states: { [string]: any } = {}
+local states: StateHandler = {} :: StateHandler
 
 local function basicState(): Types.PlayerCombatState
 	return {

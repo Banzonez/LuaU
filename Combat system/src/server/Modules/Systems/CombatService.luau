@@ -22,6 +22,7 @@ end
 assert(combatEvent:IsA("RemoteEvent"), "CombatEvent must be a RemoteEvent.")
 
 local animationsFolder = ReplicatedStorage:FindFirstChild("AnimationsIds")
+local BASIC_STYLE_ANIMATIONS = "MuayThai"
 if not animationsFolder then
 	warn("AnimationsIds folder was not found in ReplicatedStorage.")
 end
@@ -73,7 +74,12 @@ local function handleClick(player: Player): ()
 	local styleAnimations = animationsFolder and animationsFolder:FindFirstChild(playerObj.Style.StyleName)
 	local animation = styleAnimations and styleAnimations:FindFirstChild("Click" .. clickCombo)
 	if not animation or not animation:IsA("Animation") then
-		warn("Missing Click" .. clickCombo .. " for " .. playerObj.Style.StyleName .. ".")
+		styleAnimations = animationsFolder and animationsFolder:FindFirstChild(BASIC_STYLE_ANIMATIONS)
+		animation = styleAnimations and styleAnimations:FindFirstChild("Click" .. clickCombo)
+	end
+
+	if not animation or not animation:IsA("Animation") then
+		warn("Missing Click" .. clickCombo .. " animation.")
 		return
 	end
 

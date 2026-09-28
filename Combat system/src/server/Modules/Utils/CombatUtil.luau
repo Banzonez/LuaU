@@ -157,11 +157,13 @@ function utils.getAnimationDuration(player: Player, animation: Animation): numbe
 	return track.Length
 end
 
-function utils.hitboxDebug(center, size, parent)
-	if not debug then return end
+function utils.hitboxDebug(center: Vector3, size: Vector3, parent: Instance): ()
+	if not debug then
+		return
+	end
 
 	local possibleHitbox = parent:FindFirstChild("HitboxDebug")
-	if possibleHitbox then
+	if possibleHitbox and possibleHitbox:IsA("BasePart") then
 		possibleHitbox.Position = center
 		possibleHitbox.Transparency = 0.5
 		task.wait(0.3)

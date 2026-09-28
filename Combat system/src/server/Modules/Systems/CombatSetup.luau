@@ -11,7 +11,25 @@ local utilsFolder = ServerScriptService:WaitForChild("Server"):WaitForChild("Mod
 local combatStyles = utilsFolder:WaitForChild("CombatStyles")
 local StateHandler = require(script.Parent:WaitForChild("CombatStateHandler"))
 
-local playerObjs: { [Player]: { [string]: any } } = {}
+type CombatStyle = {
+	Settings: Types.StyleSettings,
+	StyleName: string,
+}
+
+type CombatObject = {
+	Style: CombatStyle,
+	Settings: Types.StyleSettings,
+	State: Types.PlayerCombatState,
+	SetStyle: (self: CombatObject, player: Player, styleName: string, settings: Types.StyleSettings?) -> boolean,
+}
+
+local playerObjs: { [Player]: CombatObject } = {}
+local setup: {
+	SetStyle: (CombatObject, Player, string, Types.StyleSettings?) -> boolean,
+	CreateObj: (CombatObject, Player, Types.StyleSettings?) -> CombatObject,
+	GetPlayerObj: (CombatObject, Player) -> CombatObject?,
+	init: () -> (),
+} = {}
 
 local function createStyle(player: Player, styleName: string, settings: Types.StyleSettings?)
 	local styleModule = combatStyles:FindFirstChild(styleName)
@@ -20,12 +38,12 @@ local function createStyle(player: Player, styleName: string, settings: Types.St
 		return nil
 	end
 
-	local styleFactory = require(styleModule)
+	local styleFactory = require(styleModule) :: { new: (Player, Types.StyleSettings?) -> CombatStyle }
 	return styleFactory.new(player, settings)
 end
 
 function setup.SetStyle(
-	self,
+	self: CombatObject,
 	player: Player,
 	styleName: string,
 	settings: Types.StyleSettings?
@@ -41,11 +59,11 @@ function setup.SetStyle(
 	return true
 end
 
-function setup:CreateObj(player: Player, settings: Types.StyleSettings?)
-	local style = createStyle(player, "MuayThai", settings)
+function setup:CreateObj(player: Player, settings: Types.StyleSettings?): CombatObject
+	local style = createStyle(player, "BasicStyle", settings)
 	assert(style, "Could not create the default combat style.")
 
-	local combat = {
+	local combat: CombatObject = {
 		Style = style,
 		Settings = style.Settings,
 		State = StateHandler:GetPlayerState(player),
@@ -56,7 +74,7 @@ function setup:CreateObj(player: Player, settings: Types.StyleSettings?)
 	return combat
 end
 
-function setup:GetPlayerObj(player: Player)
+function setup:GetPlayerObj(player: Player): CombatObject?
 	return playerObjs[player]
 end
 
