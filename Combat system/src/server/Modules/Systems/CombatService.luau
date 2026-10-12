@@ -36,13 +36,35 @@ local CombatUtil = require(utilsFolder:WaitForChild("CombatUtil"))
 local validClickInputs: { [EnumItem]: boolean } = {
 	[Enum.UserInputType.MouseButton1] = true,
 	[Enum.UserInputType.Touch] = true,
+	[Enum.KeyCode.Space] = true,
 }
+
+local function getAnimation(styleName: string, animationName: string): Animation?
+	animationsFolder = animationsFolder or ReplicatedStorage:FindFirstChild("AnimationsIds")
+	if not animationsFolder then
+		return nil
+	end
+
+	local styleAnimations = animationsFolder:FindFirstChild(styleName)
+	local animation = styleAnimations and styleAnimations:FindFirstChild(animationName)
+	if animation and animation:IsA("Animation") then
+		return animation
+	end
+
+	local basicAnimations = animationsFolder:FindFirstChild(BASIC_STYLE_ANIMATIONS)
+	animation = basicAnimations and basicAnimations:FindFirstChild(animationName)
+	if animation and animation:IsA("Animation") then
+		return animation
+	end
+
+	return nil
+end
 
 local function isValidClickRequest(action: unknown, inputKey: unknown): boolean
 	return action == "Clicks" and typeof(inputKey) == "EnumItem" and validClickInputs[inputKey :: EnumItem] == true
 end
 
-local function handleClick(player: Player): ()
+local function handleClick(player: Player, isSpaceClicked: boolean): ()
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health <= 0 then
@@ -51,6 +73,11 @@ local function handleClick(player: Player): ()
 
 	local playerState = CombatStateHandler:GetPlayerState(player)
 	if playerState.State == "Stunned" or playerState.State == "UsingAbility" or playerState.State == "UsingUlt" then
+		return
+	end
+
+	if isSpaceClicked then
+		playerState.LastSpacePressed = os.clock()
 		return
 	end
 
@@ -71,15 +98,17 @@ local function handleClick(player: Player): ()
 		clickCombo = 1
 	end
 
-	local styleAnimations = animationsFolder and animationsFolder:FindFirstChild(playerObj.Style.StyleName)
-	local animation = styleAnimations and styleAnimations:FindFirstChild("Click" .. clickCombo)
-	if not animation or not animation:IsA("Animation") then
-		styleAnimations = animationsFolder and animationsFolder:FindFirstChild(BASIC_STYLE_ANIMATIONS)
-		animation = styleAnimations and styleAnimations:FindFirstChild("Click" .. clickCombo)
+	local isUppercut = playerState.LastSpacePressed > 0 and currentTime - playerState.LastSpacePressed <= 0.1
+	local animationName = if isUppercut then "Uppercut" else "Click" .. clickCombo
+	local animation = getAnimation(playerObj.Style.StyleName, animationName)
+	if not animation and isUppercut then
+		isUppercut = false
+		animationName = "Click" .. clickCombo
+		animation = getAnimation(playerObj.Style.StyleName, animationName)
 	end
 
-	if not animation or not animation:IsA("Animation") then
-		warn("Missing Click" .. clickCombo .. " animation.")
+	if not animation then
+		warn("Missing " .. animationName .. " animation.")
 		return
 	end
 
@@ -105,13 +134,15 @@ local function handleClick(player: Player): ()
 		settings.MAX_ANGLE_DEGREES,
 		settings.ClickDamage,
 		animationDuration + stunBuffer,
-		settings.HitboxRadius
+		settings.Attacks[animationName] or settings.Attacks.Click1
 	)
 
 	if not played then
 		playerState.ClickCombo = 0
 		playerState.NextClickTime = currentTime
 		playerState.ComboExpiresAt = 0
+	elseif isUppercut then
+		playerState.LastUppercut = currentTime
 	end
 end
 
@@ -125,7 +156,7 @@ combatService.init = function(): ()
 			return
 		end
 
-		handleClick(player)
+		handleClick(player, inputKey == Enum.KeyCode.Space)
 	end)
 end
 

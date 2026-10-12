@@ -22,7 +22,9 @@ local function inputBegan(input: InputObject, gameProcessedEvent: boolean): ()
 		return
 	end
 
-	local inputKey = if validInputs[input.UserInputType] then input.UserInputType else nil
+	local inputKey = if input.KeyCode == Enum.KeyCode.Space
+		then input.KeyCode
+		else if validInputs[input.UserInputType] then input.UserInputType else nil
 	if inputKey then
 		combatEvent:FireServer("Clicks", inputKey)
 	end

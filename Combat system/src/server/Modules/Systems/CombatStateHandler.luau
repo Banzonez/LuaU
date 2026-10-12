@@ -31,6 +31,8 @@ local function basicState(): Types.PlayerCombatState
 		ClickCombo = 0,
 		NextClickTime = 0,
 		ComboExpiresAt = 0,
+		LastSpacePressed = 0,
+		LastUppercut = 0,
 		AbilitiesCooldowns = {},
 		UltCooldowns = {},
 	}
@@ -41,6 +43,8 @@ local function resetState(playerState: Types.PlayerCombatState): ()
 	playerState.ClickCombo = 0
 	playerState.NextClickTime = 0
 	playerState.ComboExpiresAt = 0
+	playerState.LastSpacePressed = 0
+	playerState.LastUppercut = 0
 	table.clear(playerState.AbilitiesCooldowns)
 	table.clear(playerState.UltCooldowns)
 end

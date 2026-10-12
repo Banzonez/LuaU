@@ -4,6 +4,7 @@ local utils = {}
 
 local ContentProvider = game:GetService("ContentProvider")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
@@ -16,6 +17,20 @@ local StateHandler = require(
 )
 
 local debug = true
+
+type ActiveAttack = {
+	player: Player,
+	character: Model,
+	maxAngle: number,
+	damage: number,
+	stunTime: number,
+	settings: Types.AttackSettings,
+	remainingTime: number,
+	hitHumanoids: { [Humanoid]: boolean },
+	hitCount: number,
+}
+
+local attacks: { [Player]: { [number]: ActiveAttack } } = {}
 
 local tracks: {
 	[Player]: {
@@ -32,6 +47,8 @@ local overlapParams = OverlapParams.new()
 overlapParams.FilterType = Enum.RaycastFilterType.Exclude
 
 local function clearAttackConnections(player: Player): ()
+	attacks[player] = nil
+	attackIds[player] = (attackIds[player] or 0) + 1
 	local hitConnection = hitConnections[player]
 	if hitConnection then
 		hitConnection:Disconnect()
@@ -59,7 +76,6 @@ local function clearTracks(player: Player): ()
 	end
 
 	tracks[player] = nil
-	attackIds[player] = nil
 end
 
 local function getTargetData(part: BasePart): (Humanoid?, BasePart?)
@@ -166,7 +182,7 @@ function utils.hitboxDebug(center: Vector3, size: Vector3, parent: Instance): ()
 	if possibleHitbox and possibleHitbox:IsA("BasePart") then
 		possibleHitbox.Position = center
 		possibleHitbox.Transparency = 0.5
-		task.wait(0.3)
+		task.wait(0.05)
 		possibleHitbox.Transparency = 1
 		return
 	end
@@ -183,9 +199,10 @@ function utils.hitboxDebug(center: Vector3, size: Vector3, parent: Instance): ()
 	utils.hitboxDebug(center, size, parent)
 end
 
-function utils.attack(player: Player, maxAngle: number, damage: number, stunTime: number, hitboxRadius: number): ()
-	local character = player.Character
-	if not character then
+function utils.attack(attack: ActiveAttack): ()
+	local player = attack.player
+	local character = attack.character
+	if player.Parent ~= Players or player.Character ~= character then
 		return
 	end
 
@@ -204,35 +221,35 @@ function utils.attack(player: Player, maxAngle: number, damage: number, stunTime
 
 	local closestHumanoid: Humanoid? = nil
 	local closestDistance = math.huge
-	local cosThreshold = math.cos(math.rad(maxAngle))
-	local cf = attackerRoot.CFrame + attackerRoot.CFrame.LookVector * 3
-	local center = Vector3.new(cf.X, cf.Y, cf.Z)
-
-	local hitboxSize = Vector3.new(hitboxRadius, hitboxRadius, hitboxRadius)
+	local cosThreshold = math.cos(math.rad(attack.maxAngle))
+	local cf = attackerRoot.CFrame * attack.settings.hitboxOffset
+	local center = cf.Position
+	local hitboxSize = attack.settings.hitboxSize
 	task.spawn(utils.hitboxDebug, center, hitboxSize, workspace)
 
-	for _, part in ipairs(workspace:GetPartBoundsInRadius(center, hitboxRadius, overlapParams)) do
+	for _, part in ipairs(workspace:GetPartBoundsInBox(cf, hitboxSize, overlapParams)) do
 		local targetHumanoid, targetRoot = getTargetData(part)
-		if not targetHumanoid or not targetRoot or targetHumanoid == attackerHumanoid or targetHumanoid.Health <= 0 then
+		if not targetHumanoid or not targetRoot or targetHumanoid == attackerHumanoid or targetHumanoid.Health <= 0 or attack.hitHumanoids[targetHumanoid] then
 			continue
 		end
 
 		local offset = targetRoot.Position - attackerRoot.Position
-		local dot = attackerRoot.CFrame.LookVector:Dot(offset.Unit)
-		if dot < cosThreshold then
+		local distance = offset.Magnitude
+		if distance > 0 and attackerRoot.CFrame.LookVector:Dot(offset / distance) < cosThreshold then
 			continue
 		end
 
-		local distance = offset.Magnitude
 		if distance < closestDistance then
 			closestHumanoid = targetHumanoid
 			closestDistance = distance
 		end
 	end
 
-	if closestHumanoid then
-		closestHumanoid:TakeDamage(damage)
-		StateHandler:StunHumanoid(closestHumanoid, stunTime)
+	if closestHumanoid and attack.hitCount < attack.settings.maxTargets then
+		attack.hitHumanoids[closestHumanoid] = true
+		attack.hitCount += 1
+		closestHumanoid:TakeDamage(attack.damage)
+		StateHandler:StunHumanoid(closestHumanoid, attack.stunTime)
 	end
 end
 
@@ -242,7 +259,7 @@ function utils.playClickAnimation(
 	maxAngle: number,
 	damage: number,
 	stunTime: number,
-	hitboxRadius: number
+	attackSettings: Types.AttackSettings
 ): boolean
 	local playerTracks = tracks[player]
 	if not playerTracks then
@@ -259,6 +276,11 @@ function utils.playClickAnimation(
 		return false
 	end
 
+	local character = player.Character
+	if not character then
+		return false
+	end
+
 	clearAttackConnections(player)
 
 	local attackId = (attackIds[player] or 0) + 1
@@ -266,11 +288,24 @@ function utils.playClickAnimation(
 	playerTracks.PlayingTrack = track
 
 	hitConnections[player] = track:GetMarkerReachedSignal("Hit"):Connect(function()
-		if attackIds[player] ~= attackId then
+		if attackIds[player] ~= attackId or player.Parent ~= Players or player.Character ~= character then
+			return
+		end
+		if StateHandler:GetPlayerState(player).State ~= "Attacking" then
+			clearAttackConnections(player)
 			return
 		end
 
-		utils.attack(player, maxAngle, damage, stunTime, hitboxRadius)
+		local attack: ActiveAttack = {
+			player = player, character = character,
+			maxAngle = maxAngle, damage = damage, stunTime = stunTime,
+			settings = table.clone(attackSettings),
+			remainingTime = attackSettings.activeDuration,
+			hitHumanoids = {}, hitCount = 0,
+		}
+		attacks[player] = attacks[player] or {}
+		attacks[player][attackId] = attack
+		utils.attack(attack)
 
 		local hitConnection = hitConnections[player]
 		if hitConnection then
@@ -294,8 +329,34 @@ function utils.playClickAnimation(
 	return true
 end
 
+RunService.Heartbeat:Connect(function(delta: number)
+	for player, playerAttacks in pairs(attacks) do
+		for id, attack in pairs(playerAttacks) do
+			local humanoid = attack.character:FindFirstChildOfClass("Humanoid")
+			if player.Parent ~= Players or player.Character ~= attack.character or not humanoid or humanoid.Health <= 0
+				or attackIds[player] ~= id or StateHandler:GetPlayerState(player).State ~= "Attacking" then
+				playerAttacks[id] = nil
+				continue
+			end
+
+			attack.remainingTime -= delta
+			if attack.remainingTime <= 0 or attack.hitCount >= attack.settings.maxTargets then
+				playerAttacks[id] = nil
+				continue
+			end
+			utils.attack(attack)
+		end
+		if next(playerAttacks) == nil then
+			attacks[player] = nil
+		end
+	end
+end)
+
 utils.init = function(): ()
-	Players.PlayerRemoving:Connect(clearTracks)
+	Players.PlayerRemoving:Connect(function(player)
+		clearTracks(player)
+		attackIds[player] = nil
+	end)
 
 	local function setupPlayer(player: Player): ()
 		player.CharacterRemoving:Connect(function()

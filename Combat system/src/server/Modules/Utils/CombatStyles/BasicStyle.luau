@@ -5,7 +5,16 @@ local basicStyle = {}
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Types = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Types"))
 
-local function styleSettings(): Types.StyleSettings
+local function attackSettings(): Types.AttackSettings
+	return {
+		hitboxSize = Vector3.new(4, 4, 4),
+		hitboxOffset = CFrame.new(0, 0, -3),
+		activeDuration = 0.3,
+		maxTargets = 1,
+	}
+end
+
+function basicStyle.getSettings(): Types.StyleSettings
 	return {
 		AbilityCooldowns = {
 			["1"] = 4,
@@ -20,7 +29,13 @@ local function styleSettings(): Types.StyleSettings
 		ClickCooldown = 0.1,
 		ComboResetTime = 1.25,
 		ClicksToFinishCombo = 4,
-		HitboxRadius = 4,
+		Attacks = {
+			Click1 = attackSettings(),
+			Click2 = attackSettings(),
+			Click3 = attackSettings(),
+			Click4 = attackSettings(),
+			Uppercut = attackSettings(),
+		},
 		MAX_ANGLE_DEGREES = 60,
 		ClickDamage = 5,
 		ClickStunTime = 0.05,
@@ -40,20 +55,30 @@ local function styleSettings(): Types.StyleSettings
 	}
 end
 
-function basicStyle.new(player: Player, settings: Types.StyleSettings?)
+function basicStyle.new(player: Player, settings: Types.StyleSettingsOverrides?)
+	local abilities: { [string]: Types.Ability } = {
+		["1"] = {
+			settings = { targetMode = "singleTarget", duration = 0, maxTargets = 1 },
+			execute = function() end,
+		},
+		["2"] = {
+			settings = { targetMode = "area", duration = 0, maxTargets = 3 },
+			execute = function() end,
+		},
+		["3"] = {
+			settings = { targetMode = "singleTarget", duration = 0, maxTargets = 1 },
+			execute = function() end,
+		},
+		["4"] = {
+			settings = { targetMode = "area", duration = 0, maxTargets = 3 },
+			execute = function() end,
+		},
+	}
 	return {
 		Player = player,
-		Settings = settings or styleSettings(),
+		Settings = settings or basicStyle.getSettings(),
 		StyleName = "BasicStyle",
-		Abilities = {
-			["1"] = function() end,
-
-			["2"] = function() end,
-
-			["3"] = function() end,
-
-			["4"] = function() end,
-		},
+		Abilities = abilities,
 	}
 end
 
