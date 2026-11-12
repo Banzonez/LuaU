@@ -1,8 +1,8 @@
 --!strict
 
 local client = script.Parent
-local systems = client:WaitForChild("Modules"):WaitForChild("Systems")
+local systems = client.Modules.Systems
 
-local CombatController = require(systems:WaitForChild("CombatController"))
+local CombatController = require(systems.CombatController)
 
 CombatController.init()

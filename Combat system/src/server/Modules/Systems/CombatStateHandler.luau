@@ -2,155 +2,399 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
-local Types = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Types"))
+local Types = require(ReplicatedStorage.Shared.Types)
 
-type StunData = {
-	WalkSpeed: number,
-	JumpPower: number,
-	JumpHeight: number,
-	AutoRotate: boolean,
-}
-
-type StateHandler = {
-	init: () -> (),
-	GetPlayerState: (self: StateHandler, player: Player) -> Types.PlayerCombatState,
-	SetTemporaryState: (self: StateHandler, player: Player, state: Types.CombatState, duration: number) -> (),
-	StunHumanoid: (self: StateHandler, humanoid: Humanoid, duration: number) -> (),
+type movementData = {
+	walkSpeed: number,
+	jumpPower: number,
+	jumpHeight: number,
+	autoRotate: boolean,
+	jumpEnabled: boolean,
 }
 
 local playerStates: { [Player]: Types.PlayerCombatState } = {}
-local stateTokens: { [Player]: number } = {}
-local stunTokens: { [Humanoid]: number } = {}
-local stunData: { [Humanoid]: StunData } = {}
-local states: StateHandler = {} :: StateHandler
+local characterStates: { [Model]: Types.PlayerCombatState } = {}
+local movement: { [Model]: movementData } = {}
+local connections: { [Model]: { RBXScriptConnection } } = {}
+local motion: {
+	[Model]: {
+		position: Vector3,
+		updatedAt: number,
+		allowance: number,
+		authorized: number,
+		blockedUntil: number,
+		verticalCredit: number,
+		authorizedUntil: number,
+	},
+} =
+	{}
+local revision = 0
+local initialized = false
+local states = { changed = Instance.new("BindableEvent") }
 
 local function basicState(): Types.PlayerCombatState
 	return {
 		State = "Idle",
+		actionId = 0,
 		ClickCombo = 0,
 		NextClickTime = 0,
 		ComboExpiresAt = 0,
-		LastSpacePressed = 0,
 		LastUppercut = 0,
 		AbilitiesCooldowns = {},
-		UltCooldowns = {},
+		nextDashTime = 0,
+		stateExpiresAt = 0,
+		ultCharge = 0,
+		ultExpiresAt = 0,
 	}
 end
 
-local function resetState(playerState: Types.PlayerCombatState): ()
-	playerState.State = "Idle"
-	playerState.ClickCombo = 0
-	playerState.NextClickTime = 0
-	playerState.ComboExpiresAt = 0
-	playerState.LastSpacePressed = 0
-	playerState.LastUppercut = 0
-	table.clear(playerState.AbilitiesCooldowns)
-	table.clear(playerState.UltCooldowns)
+local function saveMovement(humanoid: Humanoid): movementData
+	return {
+		walkSpeed = humanoid.WalkSpeed,
+		jumpPower = humanoid.JumpPower,
+		jumpHeight = humanoid.JumpHeight,
+		autoRotate = humanoid.AutoRotate,
+		jumpEnabled = humanoid:GetStateEnabled(Enum.HumanoidStateType.Jumping),
+	}
 end
 
-function states:GetPlayerState(player: Player): Types.PlayerCombatState
-	local playerState = playerStates[player]
-	if not playerState then
-		playerState = basicState()
-		playerStates[player] = playerState
-	end
+local function updateMovement(character: Model, state: Types.CombatState, walkSpeed: number?)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
 
-	return playerState
-end
-
-local function nextStateToken(player: Player): number
-	local token = (stateTokens[player] or 0) + 1
-	stateTokens[player] = token
-	return token
-end
-
-function states:SetTemporaryState(player: Player, state: Types.CombatState, duration: number): ()
-	local playerState = self:GetPlayerState(player)
-	local token = nextStateToken(player)
-
-	playerState.State = state
-
-	task.delay(duration, function()
-		if stateTokens[player] == token and playerState.State == state then
-			playerState.State = "Idle"
-		end
-	end)
-end
-
-function states:StunHumanoid(humanoid: Humanoid, duration: number): ()
-	if humanoid.Health <= 0 or not humanoid.Parent then
+	if not humanoid then
 		return
 	end
 
-	local character = humanoid.Parent
-	local player = if character:IsA("Model") then Players:GetPlayerFromCharacter(character) else nil
-	local savedStun = stunData[humanoid]
+	local saved = movement[character]
 
-	if not savedStun then
-		savedStun = {
-			WalkSpeed = humanoid.WalkSpeed,
-			JumpPower = humanoid.JumpPower,
-			JumpHeight = humanoid.JumpHeight,
-			AutoRotate = humanoid.AutoRotate,
-		}
-		stunData[humanoid] = savedStun
+	if not saved then
+		saved = saveMovement(humanoid)
+		movement[character] = saved
 	end
 
-	local token = (stunTokens[humanoid] or 0) + 1
-	stunTokens[humanoid] = token
+	local locked = state ~= "Idle"
+	humanoid.Jump = false
+	humanoid.JumpPower = if locked then 0 else saved.jumpPower
+	humanoid.JumpHeight = if locked then 0 else saved.jumpHeight
+	humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, not locked and saved.jumpEnabled)
+	humanoid.AutoRotate = if state == "Stunned" then false else saved.autoRotate
+	humanoid.WalkSpeed = if state == "Idle" then saved.walkSpeed else (walkSpeed or 0)
+	character:SetAttribute("CombatJumpLocked", locked)
+end
+
+function states.removeCharacter(character: Model)
+	if not characterStates[character] then
+		return
+	end
+
+	local removed = characterStates[character]
+	updateMovement(character, "Idle")
+	character:SetAttribute("CombatState", "Idle")
+	character:SetAttribute("UltCharge", 0)
+	character:SetAttribute("UltExpiresAt", 0)
+	characterStates[character] = nil
+	motion[character] = nil
+	local player = Players:GetPlayerFromCharacter(character)
 
 	if player then
-		local playerState = self:GetPlayerState(player)
-		nextStateToken(player)
-		playerState.State = "Stunned"
+		playerStates[player] = nil
 	end
 
-	humanoid.WalkSpeed = 0
-	humanoid.JumpPower = 0
-	humanoid.JumpHeight = 0
-	humanoid.AutoRotate = false
+	movement[character] = nil
+	local characterConnections = connections[character]
+	connections[character] = nil
 
-	task.delay(duration, function()
-		if stunTokens[humanoid] ~= token then
-			return
+	if characterConnections then
+		for _, connection in ipairs(characterConnections) do
+			connection:Disconnect()
+		end
+	end
+
+	states.changed:Fire(character, "Removed", removed.actionId, removed)
+end
+
+function states.getCharacterState(character: Model): Types.PlayerCombatState
+	local existing = characterStates[character]
+
+	if existing then
+		return existing
+	end
+
+	local player = Players:GetPlayerFromCharacter(character)
+	local state: Types.PlayerCombatState = if player then (playerStates[player] or basicState()) else basicState()
+	revision += 1
+	state.actionId = revision
+	characterStates[character] = state
+
+	if player then
+		playerStates[player] = state
+	end
+
+	character:SetAttribute("CombatState", state.State)
+	character:SetAttribute("CombatJumpLocked", false)
+	local characterConnections = {}
+	connections[character] = characterConnections
+	table.insert(
+		characterConnections,
+		character.Destroying:Connect(function()
+			states.removeCharacter(character)
+		end)
+	)
+
+	local function attachHumanoid(humanoid: Humanoid)
+		movement[character] = saveMovement(humanoid)
+		table.insert(
+			characterConnections,
+			humanoid.Died:Connect(function()
+				states.removeCharacter(character)
+			end)
+		)
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+	if humanoid then
+		attachHumanoid(humanoid)
+	else
+		local waiting: RBXScriptConnection?
+		waiting = character.ChildAdded:Connect(function(child)
+			if child:IsA("Humanoid") then
+				if waiting then
+					waiting:Disconnect()
+				end
+
+				attachHumanoid(child)
+			end
+		end)
+
+		if waiting then
+			table.insert(characterConnections, waiting)
+		end
+	end
+
+	return state
+end
+
+function states.peekCharacterState(character: Model): Types.PlayerCombatState?
+	return characterStates[character]
+end
+
+function states.resetCharacter(character: Model)
+	states.removeCharacter(character)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+	if character.Parent and humanoid and humanoid.Health > 0 then
+		states.getCharacterState(character)
+	end
+end
+
+function states.authorizeMovement(character: Model, distance: number)
+	local root = character:FindFirstChild("HumanoidRootPart")
+
+	if not root or not root:IsA("BasePart") then
+		return
+	end
+
+	local record = motion[character]
+
+	if not record then
+		record = {
+			position = root.Position,
+			updatedAt = os.clock(),
+			allowance = 0,
+			authorized = 0,
+			blockedUntil = 0,
+			verticalCredit = 5,
+			authorizedUntil = 0,
+		}
+		motion[character] = record
+	end
+
+	record.authorized = math.min(300, record.authorized + math.max(0, distance))
+	record.authorizedUntil = os.clock() + 1.5
+end
+
+function states.acceptTeleport(character: Model)
+	motion[character] = nil
+	states.authorizeMovement(character, 0)
+end
+
+function states.validMovement(character: Model): boolean
+	if not Players:GetPlayerFromCharacter(character) then
+		return true
+	end
+
+	local root = character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+	if not root or not root:IsA("BasePart") or not humanoid then
+		return false
+	end
+
+	local position = root.Position
+
+	if
+		position.X ~= position.X
+		or position.Y ~= position.Y
+		or position.Z ~= position.Z
+		or math.abs(position.X) > 1000000
+		or math.abs(position.Y) > 1000000
+		or math.abs(position.Z) > 1000000
+	then
+		return false
+	end
+
+	local record = motion[character]
+
+	if not record then
+		states.authorizeMovement(character, 0)
+
+		return false
+	end
+
+	local now = os.clock()
+	local elapsed = math.min(now - record.updatedAt, 0.5)
+	local offset = position - record.position
+	local horizontal = Vector3.new(offset.X, 0, offset.Z).Magnitude
+	local walk = math.max(16, humanoid.WalkSpeed)
+	local budget = math.min(10, record.allowance + elapsed * walk * 1.5)
+
+	if now > record.authorizedUntil then
+		record.authorized = 0
+	end
+
+	local verticalBudget = math.min(10, record.verticalCredit + elapsed * 500)
+
+	if horizontal > budget + record.authorized + 5 or math.abs(offset.Y) > verticalBudget + record.authorized + 5 then
+		record.blockedUntil = now + 0.5
+		root.CFrame = CFrame.new(record.position) * root.CFrame.Rotation
+		root.AssemblyLinearVelocity = Vector3.zero
+		record.updatedAt = now
+
+		return false
+	end
+
+	record.authorized = math.max(0, record.authorized - math.max(0, horizontal - budget))
+	record.allowance = math.max(-5, budget - horizontal)
+	record.verticalCredit = math.max(-5, verticalBudget - math.abs(offset.Y))
+	record.position = position
+	record.updatedAt = now
+
+	return now >= record.blockedUntil
+end
+
+function states:GetPlayerState(player: Player): Types.PlayerCombatState
+	local character = player.Character
+
+	if character then
+		return states.getCharacterState(character)
+	end
+
+	local state = playerStates[player]
+
+	if not state then
+		state = basicState()
+
+		if player.Parent == Players then
+			playerStates[player] = state
+		end
+	end
+
+	return state
+end
+
+function states.setCharacterState(character: Model, state: Types.CombatState, duration: number?, walkSpeed: number?)
+	if not character.Parent then
+		return
+	end
+
+	local playerState = states.getCharacterState(character)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+	if playerState.State == "Idle" and state ~= "Idle" and humanoid then
+		movement[character] = saveMovement(humanoid)
+	end
+
+	playerState.State = state
+	revision += 1
+	playerState.actionId = revision
+	playerState.stateExpiresAt = if duration and duration > 0 then os.clock() + duration else 0
+	updateMovement(character, state, walkSpeed)
+	character:SetAttribute("CombatState", state)
+	states.changed:Fire(character, state, playerState.actionId)
+end
+
+function states:SetTemporaryState(player: Player, state: Types.CombatState, duration: number)
+	local character = player.Character
+
+	if character and player.Parent == Players then
+		states.setCharacterState(character, state, duration)
+	end
+end
+
+function states:StunHumanoid(humanoid: Humanoid, duration: number)
+	local character = humanoid.Parent
+
+	if not character or not character:IsA("Model") or humanoid.Health <= 0 or duration <= 0 then
+		return
+	end
+
+	local state = states.getCharacterState(character)
+	local remaining = if state.State == "Stunned" then state.stateExpiresAt - os.clock() else 0
+	state.ClickCombo = 0
+	state.ComboExpiresAt = 0
+	states.setCharacterState(character, "Stunned", math.max(duration, remaining))
+end
+
+local function setupPlayer(player: Player)
+	local function characterAdded(character: Model)
+		playerStates[player] = basicState()
+		states.getCharacterState(character)
+		states.acceptTeleport(character)
+	end
+
+	player.CharacterAdded:Connect(characterAdded)
+	player.CharacterRemoving:Connect(function(character)
+		states.removeCharacter(character)
+	end)
+
+	if player.Character then
+		characterAdded(player.Character)
+	end
+end
+
+function states.init()
+	if initialized then
+		return
+	end
+
+	initialized = true
+	Players.PlayerAdded:Connect(setupPlayer)
+	Players.PlayerRemoving:Connect(function(player: Player)
+		if player.Character then
+			states.removeCharacter(player.Character)
 		end
 
-		if player then
-			local playerState = self:GetPlayerState(player)
-			if playerState.State == "Stunned" then
-				playerState.State = "Idle"
+		playerStates[player] = nil
+	end)
+
+	RunService.Heartbeat:Connect(function()
+		local currentTime = os.clock()
+
+		for character, state in pairs(characterStates) do
+			states.validMovement(character)
+
+			if state.State ~= "Idle" and state.stateExpiresAt > 0 and currentTime >= state.stateExpiresAt then
+				states.setCharacterState(character, "Idle")
+			end
+
+			if state.ultExpiresAt > 0 and workspace:GetServerTimeNow() >= state.ultExpiresAt then
+				state.ultExpiresAt = 0
+				character:SetAttribute("UltExpiresAt", 0)
 			end
 		end
-
-		local currentStun = stunData[humanoid]
-		if currentStun and humanoid.Parent then
-			humanoid.WalkSpeed = currentStun.WalkSpeed
-			humanoid.JumpPower = currentStun.JumpPower
-			humanoid.JumpHeight = currentStun.JumpHeight
-			humanoid.AutoRotate = currentStun.AutoRotate
-		end
-
-		stunTokens[humanoid] = nil
-		stunData[humanoid] = nil
-	end)
-end
-
-local function setupPlayer(player: Player): ()
-	states:GetPlayerState(player)
-
-	player.CharacterAdded:Connect(function()
-		nextStateToken(player)
-		resetState(states:GetPlayerState(player))
-	end)
-end
-
-states.init = function(): ()
-	Players.PlayerAdded:Connect(setupPlayer)
-
-	Players.PlayerRemoving:Connect(function(player)
-		playerStates[player] = nil
-		stateTokens[player] = nil
 	end)
 
 	for _, player in ipairs(Players:GetPlayers()) do

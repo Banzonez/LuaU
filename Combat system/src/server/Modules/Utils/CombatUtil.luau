@@ -1,104 +1,643 @@
 --!strict
 
-local utils = {}
-
 local ContentProvider = game:GetService("ContentProvider")
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
+local RunService = game:GetService("RunService")
 
-local Types = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Types"))
-local StateHandler = require(
-	ServerScriptService:WaitForChild("Server")
-		:WaitForChild("Modules")
-		:WaitForChild("Systems")
-		:WaitForChild("CombatStateHandler")
-)
+local Types = require(ReplicatedStorage.Shared.Types)
+local StateHandler = require(script.Parent.Parent.Systems.CombatStateHandler)
+local CombatSetup = require(script.Parent.Parent.Systems.CombatSetup)
 
-local debug = true
-
-type ActiveAttack = {
-	player: Player,
-	character: Model,
-	maxAngle: number,
-	damage: number,
-	stunTime: number,
-	settings: Types.AttackSettings,
-	remainingTime: number,
-	hitHumanoids: { [Humanoid]: boolean },
-	hitCount: number,
+local DEBUG_HITBOXES = false
+local animationFallbacks = {
+	Downcut = "Click4",
+	DashFront = "Click1",
+	Ability1 = "Click1",
+	Ability2 = "Click2",
+	Ability3 = "Click3",
+	Ability4 = "Click4",
 }
 
-local attacks: { [Player]: { [number]: ActiveAttack } } = {}
+type activeAttack = {
+	actionId: number,
+	settings: Types.AttackSettings,
+	startsAt: number,
+	state: Types.PlayerCombatState,
+	previousPose: CFrame?,
+	endsAt: number?,
+	hitHumanoids: { [Humanoid]: boolean },
+	hitCount: number,
+	params: OverlapParams,
+	connections: { RBXScriptConnection },
+	debugPart: Part?,
+	onHit: ((Model, number) -> ())?,
+}
 
-local tracks: {
-	[Player]: {
-		Animator: Animator,
-		Tracks: { [Animation]: AnimationTrack },
-		PlayingTrack: AnimationTrack?,
-	},
-} = {}
-local hitConnections: { [Player]: RBXScriptConnection } = {}
-local stoppedConnections: { [Player]: RBXScriptConnection } = {}
-local attackIds: { [Player]: number } = {}
+type movementData =
+	{ actionId: number, root: BasePart, velocity: LinearVelocity, attachment: Attachment, endsAt: number }
+type ownerData = { character: Model, player: Player?, automatic: boolean, endsAt: number }
+type animationCache = {
+	actionId: number,
+	animator: Animator,
+	cache: { [Animation]: AnimationTrack },
+	playing: AnimationTrack?,
+}
 
-local overlapParams = OverlapParams.new()
-overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+local tracks: { [Model]: animationCache } = {}
+local attacks: { [Model]: activeAttack } = {}
+local movers: { [Model]: movementData } = {}
+local owners: { [BasePart]: ownerData } = {}
+local initialized = false
+local utils = {}
 
-local function clearAttackConnections(player: Player): ()
-	attacks[player] = nil
-	attackIds[player] = (attackIds[player] or 0) + 1
-	local hitConnection = hitConnections[player]
-	if hitConnection then
-		hitConnection:Disconnect()
-		hitConnections[player] = nil
-	end
+local function getRoot(character: Model): BasePart?
+	local root = character:FindFirstChild("HumanoidRootPart")
 
-	local stoppedConnection = stoppedConnections[player]
-	if stoppedConnection then
-		stoppedConnection:Disconnect()
-		stoppedConnections[player] = nil
-	end
+	return if root and root:IsA("BasePart") then root else nil
 end
 
-local function clearTracks(player: Player): ()
-	clearAttackConnections(player)
+local function restoreOwner(root: BasePart)
+	local saved = owners[root]
+	owners[root] = nil
 
-	local playerTracks = tracks[player]
-	if not playerTracks then
+	if not saved or not root.Parent or root.Anchored then
 		return
 	end
 
-	for _, track in pairs(playerTracks.Tracks) do
-		track:Stop()
-		track:Destroy()
-	end
+	local canSet = root:CanSetNetworkOwnership()
 
-	tracks[player] = nil
+	if canSet then
+		local player = saved.player
+
+		if saved.automatic then
+			root:SetNetworkOwnershipAuto()
+		elseif player and player.Parent == Players and player.Character == saved.character then
+			root:SetNetworkOwner(player)
+		else
+			root:SetNetworkOwner(nil)
+		end
+	end
 end
 
-local function getTargetData(part: BasePart): (Humanoid?, BasePart?)
+local function takeOwnership(character: Model, root: BasePart, duration: number)
+	if root.Anchored then
+		return
+	end
+
+	local canSet = root:CanSetNetworkOwnership()
+
+	if not canSet then
+		return
+	end
+
+	local saved = owners[root]
+	owners[root] = {
+		character = character,
+		player = if saved then saved.player else root:GetNetworkOwner(),
+		automatic = if saved then saved.automatic else root:GetNetworkOwnershipAuto(),
+		endsAt = math.max(if saved then saved.endsAt else 0, os.clock() + duration),
+	}
+	root:SetNetworkOwner(nil)
+end
+
+local function stopMovement(character: Model)
+	local movement = movers[character]
+	movers[character] = nil
+
+	if not movement then
+		return
+	end
+
+	movement.velocity:Destroy()
+	movement.attachment:Destroy()
+
+	if
+		movement.root.Parent
+		and StateHandler.peekCharacterState(character)
+		and StateHandler.getCharacterState(character).State ~= "Stunned"
+	then
+		local current = movement.root.AssemblyLinearVelocity
+		movement.root.AssemblyLinearVelocity = Vector3.new(0, current.Y, 0)
+	end
+end
+
+function utils.getAnimation(styleName: string, animationName: string): Animation?
+	local folder = ReplicatedStorage:FindFirstChild("AnimationsIds")
+
+	if not folder then
+		return nil
+	end
+
+	local style = folder:FindFirstChild(styleName)
+	local basic = folder:FindFirstChild("MuayThai")
+	local animation = style and style:FindFirstChild(animationName)
+
+	if animation and animation:IsA("Animation") and animation.AnimationId ~= "" then
+		return animation
+	end
+
+	animation = basic and basic:FindFirstChild(animationName)
+
+	if animation and animation:IsA("Animation") and animation.AnimationId ~= "" then
+		return animation
+	end
+
+	local fallback = animationFallbacks[animationName]
+	animation = if fallback and basic then basic:FindFirstChild(fallback) else nil
+
+	return if animation and animation:IsA("Animation") and animation.AnimationId ~= "" then animation else nil
+end
+
+local function getTrack(character: Model, animation: Animation): AnimationTrack?
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+	if not humanoid or humanoid.Health <= 0 then
+		return nil
+	end
+
+	local existingAnimator = humanoid:FindFirstChildOfClass("Animator")
+	local animator: Animator
+
+	if existingAnimator then
+		animator = existingAnimator
+	else
+		animator = Instance.new("Animator")
+		animator.Parent = humanoid
+	end
+
+	local existingCache = tracks[character]
+	local cached: animationCache
+
+	if existingCache and existingCache.animator == animator then
+		cached = existingCache
+	else
+		if existingCache then
+			for _, track in pairs(existingCache.cache) do
+				track:Destroy()
+			end
+		end
+
+		cached = { animator = animator, cache = {}, playing = nil, actionId = 0 }
+		tracks[character] = cached
+	end
+
+	local track = cached.cache[animation]
+
+	if track then
+		return track
+	end
+
+	local success, loaded = pcall(function()
+		return animator:LoadAnimation(animation)
+	end)
+
+	if not success then
+		return nil
+	end
+
+	loaded.Priority = Enum.AnimationPriority.Action
+	cached.cache[animation] = loaded
+
+	return loaded
+end
+
+function utils.stopAnimation(character: Model)
+	local cached = tracks[character]
+
+	if cached and cached.playing then
+		local track = cached.playing
+		cached.playing = nil
+		track:Stop(0.1)
+	end
+end
+
+function utils.playAnimation(
+	character: Model,
+	styleName: string,
+	animationName: string,
+	looped: boolean?
+): AnimationTrack?
+	local animation = utils.getAnimation(styleName, animationName)
+
+	if not animation then
+		return nil
+	end
+
+	local track = getTrack(character, animation)
+
+	if not track then
+		return nil
+	end
+
+	utils.stopAnimation(character)
+	track.Looped = looped == true
+	local cached = tracks[character]
+
+	if cached then
+		cached.playing = track
+		cached.actionId = StateHandler.getCharacterState(character).actionId
+	end
+
+	track:Play(0.08)
+
+	return track
+end
+
+function utils.cancelAttack(character: Model)
+	local attack = attacks[character]
+	attacks[character] = nil
+
+	if not attack then
+		return
+	end
+
+	for _, connection in ipairs(attack.connections) do
+		connection:Disconnect()
+	end
+
+	if attack.debugPart then
+		attack.debugPart:Destroy()
+	end
+end
+
+local function clearCharacter(character: Model)
+	utils.cancelAttack(character)
+	stopMovement(character)
+	utils.stopAnimation(character)
+	local root = getRoot(character)
+
+	if root then
+		restoreOwner(root)
+	end
+
+	local cached = tracks[character]
+	tracks[character] = nil
+
+	if cached then
+		for _, track in pairs(cached.cache) do
+			track:Destroy()
+		end
+	end
+end
+
+local function targetData(part: BasePart): (Model?, Humanoid?, BasePart?)
 	local current: Instance? = part
 
-	while current do
+	while current and current ~= workspace do
 		if current:IsA("Model") then
 			local humanoid = current:FindFirstChildOfClass("Humanoid")
-			local rootPart = current:FindFirstChild("HumanoidRootPart")
+			local root = getRoot(current)
 
-			if humanoid and rootPart and rootPart:IsA("BasePart") then
-				return humanoid, rootPart
+			if humanoid and root then
+				return current, humanoid, root
 			end
 		end
 
 		current = current.Parent
 	end
 
-	return nil, nil
+	return nil, nil, nil
 end
 
-function utils.preloadAnimations(folder: Instance): ()
-	local animations: { Animation } = {}
+local function updateDebug(attack: activeAttack, hitboxCFrame: CFrame)
+	if not DEBUG_HITBOXES or not RunService:IsStudio() then
+		return
+	end
+
+	local part = attack.debugPart
+
+	if not part then
+		local created = Instance.new("Part")
+		created.Name = "CombatHitboxDebug"
+		created.Anchored = true
+		created.CanCollide = false
+		created.CanTouch = false
+		created.CanQuery = false
+		created.Transparency = 0.65
+		created.Color = Color3.fromRGB(220, 65, 65)
+		attack.debugPart = created
+		part = created
+	end
+
+	assert(part)
+	part.Size = attack.settings.hitboxSize
+	part.CFrame = hitboxCFrame
+	part.Parent = workspace
+end
+
+local function hasLineOfSight(character: Model, target: Model, from: Vector3, to: Vector3): boolean
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { character, target }
+	params.RespectCanCollide = true
+	local excluded: { Instance } = { character, target }
+
+	for _ = 1, 16 do
+		local result = workspace:Raycast(from, to - from, params)
+
+		if not result then
+			return true
+		end
+
+		local part = result.Instance
+		local model: Model? = nil
+
+		if part:IsA("BasePart") then
+			model = targetData(part)
+		end
+
+		if not model then
+			return false
+		end
+
+		table.insert(excluded, model)
+		params.FilterDescendantsInstances = excluded
+	end
+
+	return false
+end
+
+local function notifyHit(character: Model, target: Model, damage: number, blocked: boolean, guardBreak: boolean)
+	local player = Players:GetPlayerFromCharacter(character)
+	local events = ReplicatedStorage:FindFirstChild("Events")
+	local remote = events and events:FindFirstChild("CombatEvent")
+
+	if player and remote and remote:IsA("RemoteEvent") then
+		remote:FireClient(player, "Hit", {
+			target = target,
+			damage = damage,
+			position = target:GetPivot().Position,
+			blocked = blocked,
+			guardBreak = guardBreak,
+		})
+	end
+end
+
+local function applyHit(
+	character: Model,
+	target: Model,
+	humanoid: Humanoid,
+	root: BasePart,
+	settings: Types.AttackSettings
+): number
+	local attackerRoot = getRoot(character)
+
+	if not attackerRoot then
+		return 0
+	end
+
+	if target:FindFirstChildOfClass("ForceField") then
+		return 0
+	end
+
+	local guardBroken = false
+	local targetState = StateHandler.getCharacterState(target)
+	local targetObj = CombatSetup.getCharacterObj(target) or CombatSetup.createCharacterObj(target)
+
+	if targetState.State == "Blocking" then
+		local offset = attackerRoot.Position - root.Position
+		local horizontal = Vector3.new(offset.X, 0, offset.Z)
+		local look = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+		local frontal = horizontal.Magnitude < 0.01
+			or look:Dot(horizontal.Unit) >= math.cos(math.rad(targetObj.Settings.blockAngle))
+		if frontal then
+			if not settings.guardBreak then
+				notifyHit(character, target, 0, true, false)
+
+				return 0
+			end
+
+			guardBroken = true
+			StateHandler:StunHumanoid(humanoid, targetObj.Settings.guardBreakStun)
+		end
+	end
+
+	local health = humanoid.Health
+	humanoid:TakeDamage(settings.damage)
+	local damage = health - humanoid.Health
+
+	if damage <= 0 then
+		return 0
+	end
+
+	StateHandler:StunHumanoid(humanoid, settings.stunTime)
+	notifyHit(character, target, damage, false, guardBroken)
+
+	if settings.knockback.Magnitude > 0 and not root.Anchored then
+		StateHandler.authorizeMovement(target, settings.knockback.Magnitude * 0.5)
+		takeOwnership(target, root, 0.2)
+		root.AssemblyLinearVelocity = attackerRoot.CFrame:VectorToWorldSpace(settings.knockback)
+	end
+
+	return damage
+end
+
+local function queryAttack(character: Model, attack: activeAttack, pose: CFrame?)
+	local attackerHumanoid = character:FindFirstChildOfClass("Humanoid")
+	local state = attack.state
+
+	if
+		attacks[character] ~= attack
+		or StateHandler.peekCharacterState(character) ~= state
+		or state.actionId ~= attack.actionId
+		or not attackerHumanoid
+		or attackerHumanoid.Health <= 0
+	then
+		utils.cancelAttack(character)
+
+		return
+	end
+
+	local root = getRoot(character)
+
+	if not root then
+		return
+	end
+
+	local settings = attack.settings
+
+	if not StateHandler.validMovement(character) then
+		utils.cancelAttack(character)
+
+		return
+	end
+
+	local hitboxCFrame = (pose or root.CFrame) * settings.hitboxOffset
+	updateDebug(attack, hitboxCFrame)
+	local seen: { [Humanoid]: boolean } = {}
+	local targets: { { character: Model, humanoid: Humanoid, root: BasePart, distance: number } } = {}
+
+	for _, part in ipairs(workspace:GetPartBoundsInBox(hitboxCFrame, settings.hitboxSize, attack.params)) do
+		local target, humanoid, targetRoot = targetData(part)
+
+		if
+			not target
+			or not humanoid
+			or not targetRoot
+			or target == character
+			or humanoid.Health <= 0
+			or target:FindFirstChildOfClass("ForceField") ~= nil
+			or (character:GetAttribute("TrainingOwner") ~= nil and (not Players:GetPlayerFromCharacter(target) or (
+				Players:GetPlayerFromCharacter(target) :: Player
+			).UserId ~= character:GetAttribute("TrainingOwner")))
+			or seen[humanoid]
+			or attack.hitHumanoids[humanoid]
+		then
+			continue
+		end
+
+		seen[humanoid] = true
+		local offset = targetRoot.Position - root.Position
+		local distance = offset.Magnitude
+
+		if
+			distance > 0.01
+			and root.CFrame.LookVector:Dot(offset / distance) < math.cos(math.rad(settings.maxAngle))
+		then
+			continue
+		end
+
+		if not hasLineOfSight(character, target, root.Position, targetRoot.Position) then
+			continue
+		end
+
+		table.insert(targets, { character = target, humanoid = humanoid, root = targetRoot, distance = distance })
+	end
+
+	table.sort(targets, function(first, second)
+		return first.distance < second.distance
+	end)
+
+	for _, target in ipairs(targets) do
+		if
+			attacks[character] ~= attack
+			or StateHandler.peekCharacterState(character) ~= state
+			or state.actionId ~= attack.actionId
+			or attackerHumanoid.Health <= 0
+			or attack.hitCount >= settings.maxTargets
+		then
+			break
+		end
+
+		attack.hitHumanoids[target.humanoid] = true
+		attack.hitCount += 1
+		local damage = applyHit(character, target.character, target.humanoid, target.root, settings)
+
+		if damage > 0 and attack.onHit then
+			attack.onHit(target.character, damage)
+		end
+	end
+
+	if attack.hitCount >= settings.maxTargets then
+		utils.cancelAttack(character)
+	end
+end
+
+local function openAttack(character: Model, attack: activeAttack)
+	if
+		attacks[character] ~= attack
+		or attack.endsAt
+		or StateHandler.peekCharacterState(character) ~= attack.state
+		or attack.state.actionId ~= attack.actionId
+	then
+		return
+	end
+
+	attack.endsAt = os.clock() + attack.settings.activeDuration
+	queryAttack(character, attack)
+end
+
+function utils.startAttack(
+	character: Model,
+	styleName: string,
+	settings: Types.AttackSettings,
+	onHit: ((Model, number) -> ())?
+)
+	utils.cancelAttack(character)
+	local params = OverlapParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { character }
+	local attack: activeAttack = {
+		state = StateHandler.getCharacterState(character),
+		previousPose = nil,
+		actionId = StateHandler.getCharacterState(character).actionId,
+		settings = table.clone(settings),
+		startsAt = os.clock() + settings.hitDelay,
+		endsAt = nil,
+		hitHumanoids = {},
+		hitCount = 0,
+		params = params,
+		connections = {},
+		debugPart = nil,
+		onHit = onHit,
+	}
+	attacks[character] = attack
+	local track = utils.playAnimation(character, styleName, settings.animation)
+
+	if track and settings.useHitMarker then
+		table.insert(
+			attack.connections,
+			track:GetMarkerReachedSignal("Hit"):Connect(function()
+				openAttack(character, attack)
+			end)
+		)
+		table.insert(
+			attack.connections,
+			track.Stopped:Connect(function()
+				if attacks[character] == attack then
+					utils.cancelAttack(character)
+				end
+			end)
+		)
+	end
+end
+
+function utils.move(character: Model, direction: Vector3, speed: number, duration: number)
+	stopMovement(character)
+	local root = getRoot(character)
+	local horizontal = Vector3.new(direction.X, 0, direction.Z)
+
+	if not root or root.Anchored or horizontal.Magnitude < 0.01 or duration <= 0 then
+		return
+	end
+
+	local attachment = Instance.new("Attachment")
+	attachment.Name = "CombatMovement"
+	attachment.Parent = root
+	local velocity = Instance.new("LinearVelocity")
+	velocity.Attachment0 = attachment
+	velocity.RelativeTo = Enum.ActuatorRelativeTo.World
+	velocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Plane
+	velocity.PrimaryTangentAxis = Vector3.xAxis
+	velocity.SecondaryTangentAxis = Vector3.zAxis
+	velocity.PlaneVelocity = Vector2.new(horizontal.Unit.X * speed, horizontal.Unit.Z * speed)
+	velocity.ForceLimitsEnabled = true
+	velocity.MaxForce = root.AssemblyMass * 10000
+	velocity.Parent = root
+	movers[character] = {
+		actionId = StateHandler.getCharacterState(character).actionId,
+		root = root,
+		velocity = velocity,
+		attachment = attachment,
+		endsAt = os.clock() + duration,
+	}
+	StateHandler.authorizeMovement(character, speed * duration + 5)
+	takeOwnership(character, root, duration + 0.1)
+end
+
+function utils.launch(character: Model, speed: number)
+	local root = getRoot(character)
+
+	if root and not root.Anchored then
+		StateHandler.authorizeMovement(character, speed * 0.5)
+		takeOwnership(character, root, 0.2)
+		root.AssemblyLinearVelocity = Vector3.new(root.AssemblyLinearVelocity.X, speed, root.AssemblyLinearVelocity.Z)
+	end
+end
+
+function utils.preloadAnimations(folder: Instance)
+	local animations = {}
 
 	for _, instance in ipairs(folder:GetDescendants()) do
 		if instance:IsA("Animation") then
@@ -107,267 +646,152 @@ function utils.preloadAnimations(folder: Instance): ()
 	end
 
 	if #animations > 0 then
-		ContentProvider:PreloadAsync(animations)
+		pcall(function()
+			ContentProvider:PreloadAsync(animations)
+		end)
 	end
 end
 
 function utils.getAnimationDuration(player: Player, animation: Animation): number?
-	local character = player.Character
-	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-	if not humanoid then
-		return nil
-	end
+	local track = if player.Character then getTrack(player.Character, animation) else nil
 
-	local animator = humanoid:FindFirstChildOfClass("Animator")
-	if not animator then
-		return nil
-	end
-
-	local cachedTracks = tracks[player]
-	if cachedTracks and cachedTracks.Animator ~= animator then
-		clearTracks(player)
-	end
-
-	local playerTracks: {
-		Animator: Animator,
-		Tracks: { [Animation]: AnimationTrack },
-		PlayingTrack: AnimationTrack?,
-	}
-	if cachedTracks and cachedTracks.Animator == animator then
-		playerTracks = cachedTracks
-	else
-		playerTracks = {
-			Animator = animator,
-			Tracks = {},
-			PlayingTrack = nil,
-		}
-		tracks[player] = playerTracks
-	end
-
-	local cachedTrack = playerTracks.Tracks[animation]
-	local track: AnimationTrack
-	if cachedTrack then
-		track = cachedTrack
-	else
-		track = animator:LoadAnimation(animation)
-		track.Priority = Enum.AnimationPriority.Action
-		playerTracks.Tracks[animation] = track
-	end
-
-	local timeout = os.clock() + 2
-	while track.Length <= 0 and os.clock() < timeout do
-		task.wait()
-	end
-
-	if track.Length <= 0 then
-		warn(
-			"Could not load the duration of "
-				.. animation.Name
-				.. " for "
-				.. player.Name
-				.. ". Check its AnimationId and permissions."
-		)
-		return nil
-	end
-
-	return track.Length
+	return if track and track.Length > 0 then track.Length else nil
 end
 
-function utils.hitboxDebug(center: Vector3, size: Vector3, parent: Instance): ()
-	if not debug then
+function utils.init()
+	if initialized then
 		return
 	end
 
-	local possibleHitbox = parent:FindFirstChild("HitboxDebug")
-	if possibleHitbox and possibleHitbox:IsA("BasePart") then
-		possibleHitbox.Position = center
-		possibleHitbox.Transparency = 0.5
-		task.wait(0.05)
-		possibleHitbox.Transparency = 1
-		return
-	end
+	initialized = true
+	StateHandler.changed.Event:Connect(
+		function(character: Model, state: string, actionId: number?, _removed: Types.PlayerCombatState?)
+			if state == "Removed" then
+				if StateHandler.peekCharacterState(character) == nil then
+					clearCharacter(character)
+				end
+			elseif actionId then
+				local attack = attacks[character]
+				local movement = movers[character]
+				local cached = tracks[character]
 
-	local hitbox = Instance.new("Part")
-	hitbox.Name = "HitboxDebug"
-	hitbox.Size = size
-	hitbox.Transparency = 0.5
-	hitbox.Color = Color3.fromRGB(165, 13, 13)
-	hitbox.Anchored = true
-	hitbox.CanCollide = false
-	hitbox.Parent = parent
+				if attack and attack.actionId < actionId then
+					utils.cancelAttack(character)
+				end
 
-	utils.hitboxDebug(center, size, parent)
-end
+				if movement and movement.actionId < actionId then
+					stopMovement(character)
+				end
 
-function utils.attack(attack: ActiveAttack): ()
-	local player = attack.player
-	local character = attack.character
-	if player.Parent ~= Players or player.Character ~= character then
-		return
-	end
-
-	local attackerHumanoid = character:FindFirstChildOfClass("Humanoid")
-	local attackerRoot = character:FindFirstChild("HumanoidRootPart")
-	if not attackerHumanoid or attackerHumanoid.Health <= 0 or not attackerRoot or not attackerRoot:IsA("BasePart") then
-		return
-	end
-
-	local playerState = StateHandler:GetPlayerState(player)
-	if playerState.State ~= "Attacking" then
-		return
-	end
-
-	overlapParams.FilterDescendantsInstances = { character }
-
-	local closestHumanoid: Humanoid? = nil
-	local closestDistance = math.huge
-	local cosThreshold = math.cos(math.rad(attack.maxAngle))
-	local cf = attackerRoot.CFrame * attack.settings.hitboxOffset
-	local center = cf.Position
-	local hitboxSize = attack.settings.hitboxSize
-	task.spawn(utils.hitboxDebug, center, hitboxSize, workspace)
-
-	for _, part in ipairs(workspace:GetPartBoundsInBox(cf, hitboxSize, overlapParams)) do
-		local targetHumanoid, targetRoot = getTargetData(part)
-		if not targetHumanoid or not targetRoot or targetHumanoid == attackerHumanoid or targetHumanoid.Health <= 0 or attack.hitHumanoids[targetHumanoid] then
-			continue
-		end
-
-		local offset = targetRoot.Position - attackerRoot.Position
-		local distance = offset.Magnitude
-		if distance > 0 and attackerRoot.CFrame.LookVector:Dot(offset / distance) < cosThreshold then
-			continue
-		end
-
-		if distance < closestDistance then
-			closestHumanoid = targetHumanoid
-			closestDistance = distance
-		end
-	end
-
-	if closestHumanoid and attack.hitCount < attack.settings.maxTargets then
-		attack.hitHumanoids[closestHumanoid] = true
-		attack.hitCount += 1
-		closestHumanoid:TakeDamage(attack.damage)
-		StateHandler:StunHumanoid(closestHumanoid, attack.stunTime)
-	end
-end
-
-function utils.playClickAnimation(
-	player: Player,
-	animation: Animation,
-	maxAngle: number,
-	damage: number,
-	stunTime: number,
-	attackSettings: Types.AttackSettings
-): boolean
-	local playerTracks = tracks[player]
-	if not playerTracks then
-		return false
-	end
-
-	local track = playerTracks.Tracks[animation]
-	if not track or track.IsPlaying then
-		return false
-	end
-
-	local playingTrack = playerTracks.PlayingTrack
-	if playingTrack and playingTrack.IsPlaying then
-		return false
-	end
-
-	local character = player.Character
-	if not character then
-		return false
-	end
-
-	clearAttackConnections(player)
-
-	local attackId = (attackIds[player] or 0) + 1
-	attackIds[player] = attackId
-	playerTracks.PlayingTrack = track
-
-	hitConnections[player] = track:GetMarkerReachedSignal("Hit"):Connect(function()
-		if attackIds[player] ~= attackId or player.Parent ~= Players or player.Character ~= character then
-			return
-		end
-		if StateHandler:GetPlayerState(player).State ~= "Attacking" then
-			clearAttackConnections(player)
-			return
-		end
-
-		local attack: ActiveAttack = {
-			player = player, character = character,
-			maxAngle = maxAngle, damage = damage, stunTime = stunTime,
-			settings = table.clone(attackSettings),
-			remainingTime = attackSettings.activeDuration,
-			hitHumanoids = {}, hitCount = 0,
-		}
-		attacks[player] = attacks[player] or {}
-		attacks[player][attackId] = attack
-		utils.attack(attack)
-
-		local hitConnection = hitConnections[player]
-		if hitConnection then
-			hitConnection:Disconnect()
-			hitConnections[player] = nil
-		end
-	end)
-
-	stoppedConnections[player] = track.Stopped:Connect(function()
-		if attackIds[player] ~= attackId then
-			return
-		end
-
-		clearAttackConnections(player)
-		if playerTracks.PlayingTrack == track then
-			playerTracks.PlayingTrack = nil
-		end
-	end)
-
-	track:Play(0.1)
-	return true
-end
-
-RunService.Heartbeat:Connect(function(delta: number)
-	for player, playerAttacks in pairs(attacks) do
-		for id, attack in pairs(playerAttacks) do
-			local humanoid = attack.character:FindFirstChildOfClass("Humanoid")
-			if player.Parent ~= Players or player.Character ~= attack.character or not humanoid or humanoid.Health <= 0
-				or attackIds[player] ~= id or StateHandler:GetPlayerState(player).State ~= "Attacking" then
-				playerAttacks[id] = nil
-				continue
+				if cached and cached.actionId < actionId then
+					utils.stopAnimation(character)
+				end
 			end
+		end
+	)
+	RunService.Heartbeat:Connect(function(delta: number)
+		local currentTime = os.clock()
 
-			attack.remainingTime -= delta
-			if attack.remainingTime <= 0 or attack.hitCount >= attack.settings.maxTargets then
-				playerAttacks[id] = nil
-				continue
+		for character, attack in pairs(attacks) do
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+			if
+				not character.Parent
+				or not humanoid
+				or humanoid.Health <= 0
+				or StateHandler.peekCharacterState(character) ~= attack.state
+				or attack.state.actionId ~= attack.actionId
+			then
+				utils.cancelAttack(character)
+			elseif attack.endsAt and currentTime >= attack.endsAt then
+				utils.cancelAttack(character)
+			elseif attack.endsAt then
+				local root = getRoot(character)
+
+				if root then
+					local previous = attack.previousPose or root.CFrame
+					local distance = (root.Position - previous.Position).Magnitude
+					local steps = math.clamp(math.ceil(distance / 2), 1, 6)
+
+					for step = 1, steps do
+						queryAttack(character, attack, previous:Lerp(root.CFrame, step / steps))
+					end
+
+					attack.previousPose = root.CFrame
+				end
+			elseif currentTime >= attack.startsAt then
+				if attack.settings.waitForLanding then
+					local root = getRoot(character)
+					local params = RaycastParams.new()
+					params.FilterDescendantsInstances = { character }
+					params.RespectCanCollide = true
+
+					if
+						root
+						and root.AssemblyLinearVelocity.Y <= 0
+						and workspace:Raycast(
+							root.Position,
+							Vector3.new(0, -(humanoid.HipHeight + root.Size.Y / 2 + 2), 0),
+							params
+						)
+					then
+						openAttack(character, attack)
+					end
+				elseif not attack.settings.useHitMarker then
+					openAttack(character, attack)
+				elseif
+					currentTime
+					>= attack.startsAt
+						- attack.settings.hitDelay
+						+ attack.settings.recovery
+						- attack.settings.activeDuration
+				then
+					utils.cancelAttack(character)
+				end
 			end
-			utils.attack(attack)
 		end
-		if next(playerAttacks) == nil then
-			attacks[player] = nil
-		end
-	end
-end)
 
-utils.init = function(): ()
-	Players.PlayerRemoving:Connect(function(player)
-		clearTracks(player)
-		attackIds[player] = nil
+		for character, movement in pairs(movers) do
+			if
+				not character.Parent
+				or not movement.root.Parent
+				or currentTime >= movement.endsAt
+				or not StateHandler.peekCharacterState(character)
+				or StateHandler.getCharacterState(character).actionId ~= movement.actionId
+			then
+				stopMovement(character)
+			else
+				local velocity = movement.root.AssemblyLinearVelocity
+				local params = RaycastParams.new()
+				params.FilterType = Enum.RaycastFilterType.Exclude
+				params.FilterDescendantsInstances = { character }
+				params.RespectCanCollide = true
+
+				if
+					Vector3.new(velocity.X, 0, velocity.Z).Magnitude > 0.01
+					and workspace:Blockcast(
+						movement.root.CFrame,
+						Vector3.new(2, 2, 2),
+						Vector3.new(velocity.X, 0, velocity.Z) * delta + Vector3.new(velocity.X, 0, velocity.Z).Unit * 1,
+						params
+					)
+				then
+					stopMovement(character)
+				end
+			end
+		end
+
+		for root, saved in pairs(owners) do
+			if not root.Parent or currentTime >= saved.endsAt then
+				restoreOwner(root)
+			end
+		end
 	end)
 
-	local function setupPlayer(player: Player): ()
-		player.CharacterRemoving:Connect(function()
-			clearTracks(player)
-		end)
-	end
+	local animations = ReplicatedStorage:FindFirstChild("AnimationsIds")
 
-	Players.PlayerAdded:Connect(setupPlayer)
-
-	for _, player in ipairs(Players:GetPlayers()) do
-		setupPlayer(player)
+	if animations then
+		task.spawn(utils.preloadAnimations, animations)
 	end
 end
 
