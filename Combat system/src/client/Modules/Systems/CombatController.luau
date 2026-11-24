@@ -158,8 +158,6 @@ function combat.init()
 	combatEvent.OnClientEvent:Connect(function(action: string, value)
 		if action == "State" and type(value) == "table" then
 			CombatInterface.updateState(value)
-		elseif action == "Notice" and type(value) == "string" then
-			CombatInterface.showNotice(value)
 		end
 	end)
 

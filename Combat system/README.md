@@ -24,7 +24,7 @@ The authored HUD is `StarterGui.CombatInterface`, owned by the Studio place. Edi
 
 Each ability/ultimate button groups the glass lines under `Cracks` and the detached pieces under `Fragments`. Keep these groups collapsed when editing the button's text, size, color or outline.
 
-The compact skill slots have no shortcut labels. Each press reveals 161 thin, distributed glass segments in a shuffled order, clipped to the button. Touch controls follow the native jump button; portrait layout raises the hotbar above them. The labels GUARD, STUNNED, RESPAWNING, BLOCKED and BREAK are omitted; cooldowns, damage numbers and training notices remain.
+The compact skill slots have no shortcut labels. Each press reveals 161 thin, distributed glass segments in a shuffled order, clipped to the button. Touch controls follow the native jump button; portrait layout raises the hotbar above them. Cooldowns are shown on the ability slots.
 
 Studio's `ServerStorage.MuayThaiAnimationStudy` contains the free [Muay thai animations by InnardCrysis](https://create.roblox.com/store/asset/8297368716) for evaluation. Its sequences use R6 poses, while the current training rig uses R15, so these candidates are not assigned to gameplay slots. One candidate was played on a temporary R6 rig. The study exists only in Studio and requires saving/exporting separately; it is not included in the Rojo build or authored by this project.
 

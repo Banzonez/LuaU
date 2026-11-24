@@ -67,8 +67,6 @@ local gui: ScreenGui? = nil
 local guiWatcher: RBXScriptConnection? = nil
 local bindingQueued = false
 local actions: callbacks? = nil
-local notice = ""
-local noticeUntil = 0
 local chargeTween: Tween? = nil
 local chargeTarget: number? = nil
 local interface = {}
@@ -97,7 +95,7 @@ local function hasChildren(parent: Instance, names: { string }): boolean
 end
 
 local function ready(screen: ScreenGui): boolean
-	if not hasChildren(screen, { "Hud", "Status", "Training", "TrainingMenu", "Touch" }) then
+	if not hasChildren(screen, { "Hud", "Training", "TrainingMenu", "Touch" }) then
 		return false
 	end
 
@@ -230,7 +228,6 @@ function interface.reset()
 		ultRequired = 100,
 		ultExpiresAt = 0,
 	}
-	noticeUntil = 0
 end
 
 function interface.updateState(state: combatView)
@@ -243,11 +240,6 @@ function interface.updateState(state: combatView)
 	end
 
 	view = state
-end
-
-function interface.showNotice(message: string)
-	notice = message
-	noticeUntil = os.clock() + 3
 end
 
 local function bindPress(key: string, item: TextButton)
@@ -407,7 +399,6 @@ function interface.init(callbacks: callbacks)
 	end
 
 	local healthFill = (hud:FindFirstChild("Health") :: Frame):FindFirstChild("Fill") :: Frame
-	local status = screen:FindFirstChild("Status") :: TextLabel
 	local training = screen:FindFirstChild("Training") :: TextButton
 	local menu = screen:FindFirstChild("TrainingMenu") :: Frame
 
@@ -654,7 +645,6 @@ function interface.init(callbacks: callbacks)
 		healthFill.BackgroundColor3 = if healthRatio < 0.25
 			then Color3.fromRGB(235, 82, 72)
 			else Color3.fromRGB(180, 83, 78)
-		status.Text = if now < noticeUntil then notice else ""
 	end)
 
 	connect(screen.Destroying, function()

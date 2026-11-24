@@ -1,7 +1,6 @@
 --!strict
 
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local ServerStorage = game:GetService("ServerStorage")
 
@@ -22,15 +21,6 @@ local lastSpawn: { [Player]: number } = {}
 local accumulator = 0
 local initialized = false
 local npcHandler = {}
-
-local function notify(player: Player, message: string)
-	local events = ReplicatedStorage:FindFirstChild("Events")
-	local event = events and events:FindFirstChild("CombatEvent")
-
-	if event and event:IsA("RemoteEvent") then
-		event:FireClient(player, "Notice", message)
-	end
-end
 
 local function clearOwned(player: Player)
 	for model, record in pairs(npcs) do
@@ -78,16 +68,12 @@ local function spawnNpc(player: Player, mode: string)
 	end
 
 	if owned >= MAX_PER_PLAYER or total >= MAX_TOTAL then
-		notify(player, "Training dummy limit reached.")
-
 		return
 	end
 
 	local template = ServerStorage:FindFirstChild("CombatNpc")
 
 	if not template or not template:IsA("Model") or not template.Archivable then
-		notify(player, "Add a rig named CombatNpc to ServerStorage.")
-
 		return
 	end
 
@@ -122,7 +108,6 @@ local function spawnNpc(player: Player, mode: string)
 
 	if not ground then
 		model:Destroy()
-		notify(player, "No safe ground for a dummy.")
 
 		return
 	end
@@ -138,7 +123,6 @@ local function spawnNpc(player: Player, mode: string)
 		#workspace:GetPartBoundsInBox(CFrame.new(position + Vector3.new(0, 1, 0)), Vector3.new(4, 3, 4), overlap) > 0
 	then
 		model:Destroy()
-		notify(player, "Not enough room for a dummy.")
 
 		return
 	end
@@ -172,8 +156,6 @@ local function spawnNpc(player: Player, mode: string)
 		npcs[model] = nil
 		StateHandler.removeCharacter(model)
 	end)
-
-	notify(player, mode .. " dummy spawned.")
 end
 
 local function trainingTarget(owner: Player, root: BasePart): BasePart?
