@@ -21,11 +21,6 @@
           "$path": "src/client"
         }
       }
-    },
-    "StarterGui": {
-      "CombatInterface": {
-        "$path": "src/ui/CombatInterface.rbxmx"
-      }
     }
   }
 }

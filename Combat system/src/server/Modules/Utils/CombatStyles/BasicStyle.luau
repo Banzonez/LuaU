@@ -76,7 +76,7 @@ function basicStyle.getSettings(): Types.StyleSettings
 		variantCooldown = 1.5,
 		ultDuration = 20,
 		ultActivationTime = 0.6,
-		ultRequired = 100,
+		ultRequired = 200,
 		ultDamageMultiplier = 1.4,
 		ultCooldownMultiplier = 0.7,
 		UltSettings = {

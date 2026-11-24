@@ -263,7 +263,7 @@ function setup.SetStyle(
 	styleName: string,
 	settings: Types.StyleSettingsOverrides?
 ): boolean
-	if player.Character ~= self.character or characterObjs[self.character] ~= self then
+	if player.Character ~= self.character or setup.getCharacterObj(self.character) ~= self then
 		return false
 	end
 
@@ -314,7 +314,9 @@ function setup.createCharacterObj(
 end
 
 function setup.getCharacterObj(character: Model): combatObject?
-	return characterObjs[character]
+	local object = characterObjs[character]
+
+	return if object and object.State == StateHandler.peekCharacterState(character) then object else nil
 end
 
 function setup:CreateObj(player: Player, settings: Types.StyleSettingsOverrides?): combatObject
@@ -325,7 +327,7 @@ function setup:CreateObj(player: Player, settings: Types.StyleSettingsOverrides?
 end
 
 function setup:GetPlayerObj(player: Player): combatObject?
-	return if player.Character then characterObjs[player.Character] else nil
+	return if player.Character then setup.getCharacterObj(player.Character) else nil
 end
 
 function setup.init()

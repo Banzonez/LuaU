@@ -5,6 +5,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local ServerStorage = game:GetService("ServerStorage")
 
+local CombatUtil = require(script.Parent.Parent.Utils.CombatUtil)
 local CombatService = require(script.Parent.CombatService)
 local CombatSetup = require(script.Parent.CombatSetup)
 local StateHandler = require(script.Parent.CombatStateHandler)
@@ -82,7 +83,7 @@ local function spawnNpc(player: Player, mode: string)
 		return
 	end
 
-	local template = ServerStorage:FindFirstChild("CombatNpc") or workspace:FindFirstChild("Rig")
+	local template = ServerStorage:FindFirstChild("CombatNpc")
 
 	if not template or not template:IsA("Model") or not template.Archivable then
 		notify(player, "Add a rig named CombatNpc to ServerStorage.")
@@ -126,9 +127,7 @@ local function spawnNpc(player: Player, mode: string)
 		return
 	end
 
-	if ground then
-		position = ground.Position + Vector3.new(0, humanoid.HipHeight + npcRoot.Size.Y / 2, 0)
-	end
+	position = ground.Position + Vector3.new(0, humanoid.HipHeight + npcRoot.Size.Y / 2, 0)
 
 	model:PivotTo(CFrame.lookAt(position, Vector3.new(root.Position.X, position.Y, root.Position.Z)))
 	local overlap = OverlapParams.new()
@@ -153,7 +152,22 @@ local function spawnNpc(player: Player, mode: string)
 	end
 
 	npcs[model] = { owner = player, mode = mode, humanoid = humanoid, root = npcRoot, expiresAt = currentTime + 180 }
-	CombatSetup.createCharacterObj(model)
+	local object = CombatSetup.createCharacterObj(model)
+	local idle = CombatUtil.getAnimation(object.Style.StyleName, "Idle")
+
+	if idle then
+		local animator = humanoid:FindFirstChildOfClass("Animator")
+
+		if not animator then
+			animator = Instance.new("Animator")
+			animator.Parent = humanoid
+		end
+
+		local track = animator:LoadAnimation(idle)
+		track.Priority = Enum.AnimationPriority.Idle
+		track.Looped = true
+		track:Play()
+	end
 	model.Destroying:Connect(function()
 		npcs[model] = nil
 		StateHandler.removeCharacter(model)
@@ -183,23 +197,6 @@ function npcHandler.init()
 
 	initialized = true
 
-	if not ServerStorage:FindFirstChild("CombatNpc") then
-		local rig = workspace:FindFirstChild("Rig")
-
-		if rig and rig:IsA("Model") and rig.Archivable then
-			local template = rig:Clone()
-			template.Name = "CombatNpc"
-
-			for _, item in ipairs(template:GetDescendants()) do
-				if item:IsA("LuaSourceContainer") then
-					item:Destroy()
-				end
-			end
-
-			template.Parent = ServerStorage
-		end
-	end
-
 	CombatService.setNpcRequest(spawnNpc)
 	Players.PlayerRemoving:Connect(function(player: Player)
 		clearOwned(player)
@@ -228,23 +225,12 @@ function npcHandler.init()
 
 			if target and (state.State == "Idle" or state.State == "Blocking") then
 				local position = record.root.Position
-				local horizontalTarget = Vector3.new(target.Position.X, position.Y, target.Position.Z)
-
-				if (horizontalTarget - position).Magnitude > 0.1 then
-					record.root.CFrame = CFrame.lookAt(position, horizontalTarget)
-				end
-
 				local blocking = record.mode == "Block"
 					or (record.mode == "Mixed" and math.floor(os.clock() * 2) % 3 == 0)
 				CombatService.setBlocking(model, blocking)
 
-				if not blocking then
-					if (target.Position - position).Magnitude > 4 then
-						record.humanoid:MoveTo(target.Position)
-					else
-						record.humanoid:MoveTo(position)
-						CombatService.tryAttack(model)
-					end
+				if not blocking and (target.Position - position).Magnitude <= 4 then
+					CombatService.tryAttack(model)
 				end
 			elseif not target then
 				CombatService.setBlocking(model, false)

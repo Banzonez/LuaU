@@ -9,8 +9,8 @@ A server-authoritative battlegrounds combat system by BanZonez (GitHub). Credit 
 | Basic combo | M1; hold to repeat |
 | Block | Hold F |
 | Dash | Q + WASD; direction follows the camera |
-| Uppercut | Space + M1, including before the fourth hit |
-| Downcut | M1 while falling, including before the fourth hit |
+| Uppercut | Space + M1, only on the second combo hit |
+| Downcut | M1 while falling, only on the second combo hit |
 | Abilities | 1, 2, 3, 4 |
 | Ultimate | G, after filling the meter |
 
@@ -20,7 +20,7 @@ Abilities and ultimate activate on release. Hold duration changes only their loc
 
 Sync `default.project.json` with Rojo. The server and client loaders initialize their modules once.
 
-The authored HUD is `StarterGui.CombatInterface`, stored in `src/ui/CombatInterface.rbxmx`. Edit its objects in Studio and export the model back to that file to retain changes through Rojo. All slots, labels, bars, crack segments, chips, and scales exist in the model. `CombatInterface` creates no GUI objects: it binds input, displays server data, and animates the authored objects. Keep its names/hierarchy when editing.
+The authored HUD is `StarterGui.CombatInterface`, owned by the Studio place. Edit its objects in Explorer. The current Rojo mapping syncs the scripts. All slots, labels, bars, crack segments, chips, and scales exist in the model. `CombatInterface` creates no GUI objects: it binds input, displays server data, and animates the authored objects. Keep its names/hierarchy when editing.
 
 Each ability/ultimate button groups the glass lines under `Cracks` and the detached pieces under `Fragments`. Keep these groups collapsed when editing the button's text, size, color or outline.
 
@@ -39,7 +39,7 @@ The authored MuayThai assets currently cover `Click1`–`Click4`, `Block`, and `
 
 Until those assets are supplied, downcut/front-dash/ability attacks reuse the existing M1 animations. Other missing movement/ultimate animations leave the mechanics active without an animation.
 
-For training dummies, provide a healthy humanoid rig named `CombatNpc` in ServerStorage. If absent, the server caches the authored `Workspace.Rig` at startup. It never clones scripts into active dummies.
+For training dummies, provide a healthy humanoid rig named `CombatNpc` in ServerStorage. Dummies keep their spawn facing and perform their action in place. NPC hits grant half the usual ultimate charge. BasicStyle requires 200 charge. It never clones scripts into active dummies.
 
 ## Styles
 

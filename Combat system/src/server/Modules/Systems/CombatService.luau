@@ -102,7 +102,7 @@ local function sendState(character: Model)
 	})
 end
 
-local function onHit(character: Model, _target: Model, damage: number)
+local function onHit(character: Model, target: Model, damage: number)
 	if not alive(character) then
 		return
 	end
@@ -111,7 +111,8 @@ local function onHit(character: Model, _target: Model, damage: number)
 	local state = object.State
 
 	if state.ultExpiresAt <= workspace:GetServerTimeNow() then
-		state.ultCharge = math.min(object.Settings.ultRequired, state.ultCharge + damage)
+		local gain = if Players:GetPlayerFromCharacter(target) then damage else damage * 0.5
+		state.ultCharge = math.min(object.Settings.ultRequired, state.ultCharge + gain)
 		character:SetAttribute("UltCharge", state.ultCharge)
 		sendState(character)
 	end
@@ -139,7 +140,7 @@ function combatService.tryAttack(character: Model, uppercut: boolean?): boolean
 	local root = rootOf(character)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 	assert(root and humanoid)
-	local variantReady = currentTime - state.LastUppercut >= object.Settings.variantCooldown
+	local variantReady = combo == 2 and currentTime - state.LastUppercut >= object.Settings.variantCooldown
 
 	if variantReady and humanoid.FloorMaterial == Enum.Material.Air and root.AssemblyLinearVelocity.Y < -3 then
 		name = "Downcut"

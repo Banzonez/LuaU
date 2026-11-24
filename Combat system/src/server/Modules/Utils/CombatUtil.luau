@@ -358,22 +358,6 @@ local function hasLineOfSight(character: Model, target: Model, from: Vector3, to
 	return false
 end
 
-local function notifyHit(character: Model, target: Model, damage: number, blocked: boolean, guardBreak: boolean)
-	local player = Players:GetPlayerFromCharacter(character)
-	local events = ReplicatedStorage:FindFirstChild("Events")
-	local remote = events and events:FindFirstChild("CombatEvent")
-
-	if player and remote and remote:IsA("RemoteEvent") then
-		remote:FireClient(player, "Hit", {
-			target = target,
-			damage = damage,
-			position = target:GetPivot().Position,
-			blocked = blocked,
-			guardBreak = guardBreak,
-		})
-	end
-end
-
 local function applyHit(
 	character: Model,
 	target: Model,
@@ -391,7 +375,6 @@ local function applyHit(
 		return 0
 	end
 
-	local guardBroken = false
 	local targetState = StateHandler.getCharacterState(target)
 	local targetObj = CombatSetup.getCharacterObj(target) or CombatSetup.createCharacterObj(target)
 
@@ -403,12 +386,9 @@ local function applyHit(
 			or look:Dot(horizontal.Unit) >= math.cos(math.rad(targetObj.Settings.blockAngle))
 		if frontal then
 			if not settings.guardBreak then
-				notifyHit(character, target, 0, true, false)
-
 				return 0
 			end
 
-			guardBroken = true
 			StateHandler:StunHumanoid(humanoid, targetObj.Settings.guardBreakStun)
 		end
 	end
@@ -422,7 +402,6 @@ local function applyHit(
 	end
 
 	StateHandler:StunHumanoid(humanoid, settings.stunTime)
-	notifyHit(character, target, damage, false, guardBroken)
 
 	if settings.knockback.Magnitude > 0 and not root.Anchored then
 		StateHandler.authorizeMovement(target, settings.knockback.Magnitude * 0.5)
@@ -463,7 +442,9 @@ local function queryAttack(character: Model, attack: activeAttack, pose: CFrame?
 		return
 	end
 
-	local hitboxCFrame = (pose or root.CFrame) * settings.hitboxOffset
+	local attackPose = pose or root.CFrame
+	local trainingOwner = character:GetAttribute("TrainingOwner")
+	local hitboxCFrame = attackPose * settings.hitboxOffset
 	updateDebug(attack, hitboxCFrame)
 	local seen: { [Humanoid]: boolean } = {}
 	local targets: { { character: Model, humanoid: Humanoid, root: BasePart, distance: number } } = {}
@@ -478,9 +459,6 @@ local function queryAttack(character: Model, attack: activeAttack, pose: CFrame?
 			or target == character
 			or humanoid.Health <= 0
 			or target:FindFirstChildOfClass("ForceField") ~= nil
-			or (character:GetAttribute("TrainingOwner") ~= nil and (not Players:GetPlayerFromCharacter(target) or (
-				Players:GetPlayerFromCharacter(target) :: Player
-			).UserId ~= character:GetAttribute("TrainingOwner")))
 			or seen[humanoid]
 			or attack.hitHumanoids[humanoid]
 		then
@@ -488,17 +466,23 @@ local function queryAttack(character: Model, attack: activeAttack, pose: CFrame?
 		end
 
 		seen[humanoid] = true
-		local offset = targetRoot.Position - root.Position
+
+		if trainingOwner ~= nil then
+			local player = Players:GetPlayerFromCharacter(target)
+
+			if not player or player.UserId ~= trainingOwner then
+				continue
+			end
+		end
+
+		local offset = targetRoot.Position - attackPose.Position
 		local distance = offset.Magnitude
 
-		if
-			distance > 0.01
-			and root.CFrame.LookVector:Dot(offset / distance) < math.cos(math.rad(settings.maxAngle))
-		then
+		if distance > 0.01 and attackPose.LookVector:Dot(offset / distance) < math.cos(math.rad(settings.maxAngle)) then
 			continue
 		end
 
-		if not hasLineOfSight(character, target, root.Position, targetRoot.Position) then
+		if not hasLineOfSight(character, target, attackPose.Position, targetRoot.Position) then
 			continue
 		end
 
@@ -544,8 +528,10 @@ local function openAttack(character: Model, attack: activeAttack)
 		return
 	end
 
+	local root = getRoot(character)
+	attack.previousPose = if root then root.CFrame else nil
 	attack.endsAt = os.clock() + attack.settings.activeDuration
-	queryAttack(character, attack)
+	queryAttack(character, attack, attack.previousPose)
 end
 
 function utils.startAttack(

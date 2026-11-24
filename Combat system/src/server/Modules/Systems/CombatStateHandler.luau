@@ -17,6 +17,7 @@ type movementData = {
 local playerStates: { [Player]: Types.PlayerCombatState } = {}
 local characterStates: { [Model]: Types.PlayerCombatState } = {}
 local movement: { [Model]: movementData } = {}
+local pendingWalkSpeed: { [Model]: number? } = {}
 local connections: { [Model]: { RBXScriptConnection } } = {}
 local motion: {
 	[Model]: {
@@ -63,25 +64,36 @@ end
 local function updateMovement(character: Model, state: Types.CombatState, walkSpeed: number?)
 	local humanoid = character:FindFirstChildOfClass("Humanoid")
 
+	local locked = state ~= "Idle"
+	character:SetAttribute("CombatJumpLocked", locked)
+
 	if not humanoid then
+		pendingWalkSpeed[character] = if locked then walkSpeed else nil
+
 		return
 	end
 
+	pendingWalkSpeed[character] = nil
 	local saved = movement[character]
 
 	if not saved then
+		if not locked then
+			return
+		end
+
 		saved = saveMovement(humanoid)
 		movement[character] = saved
 	end
 
-	local locked = state ~= "Idle"
 	humanoid.Jump = false
 	humanoid.JumpPower = if locked then 0 else saved.jumpPower
 	humanoid.JumpHeight = if locked then 0 else saved.jumpHeight
 	humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, not locked and saved.jumpEnabled)
 	humanoid.AutoRotate = if state == "Stunned" then false else saved.autoRotate
 	humanoid.WalkSpeed = if state == "Idle" then saved.walkSpeed else (walkSpeed or 0)
-	character:SetAttribute("CombatJumpLocked", locked)
+	if not locked then
+		movement[character] = nil
+	end
 end
 
 function states.removeCharacter(character: Model)
@@ -144,7 +156,10 @@ function states.getCharacterState(character: Model): Types.PlayerCombatState
 	)
 
 	local function attachHumanoid(humanoid: Humanoid)
-		movement[character] = saveMovement(humanoid)
+		if state.State ~= "Idle" then
+			updateMovement(character, state.State, pendingWalkSpeed[character])
+		end
+
 		table.insert(
 			characterConnections,
 			humanoid.Died:Connect(function()
@@ -311,11 +326,6 @@ function states.setCharacterState(character: Model, state: Types.CombatState, du
 	end
 
 	local playerState = states.getCharacterState(character)
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-
-	if playerState.State == "Idle" and state ~= "Idle" and humanoid then
-		movement[character] = saveMovement(humanoid)
-	end
 
 	playerState.State = state
 	revision += 1
