@@ -9,7 +9,7 @@ A server-authoritative battlegrounds combat system by BanZonez (GitHub). Credit 
 | Basic combo | M1; hold to repeat |
 | Block | Hold F |
 | Dash | Q + WASD; direction follows the camera |
-| Uppercut | Space + M1, only on the second combo hit |
+| Uppercut | M1 then jump while grounded, only on the second combo hit |
 | Downcut | M1 while falling, only on the second combo hit |
 | Abilities | 1, 2, 3, 4 |
 | Ultimate | G, after filling the meter |
@@ -30,14 +30,9 @@ Studio's `ServerStorage.MuayThaiAnimationStudy` contains the free [Muay thai ani
 
 Keep animations under `ReplicatedStorage.AnimationsIds.<StyleName>`. Missing style animations fall back to `MuayThai`. Attacks use `hitDelay` by default, independently of animation length. Set `useHitMarker = true` only for an asset authored with a `Hit` marker: its marker opens the window, and a missing marker cancels the hit before recovery ends. Marker mode fails closed; it never fires an earlier timing fallback. `waitForLanding` waits for nearby ground while descending, within the action lifetime.
 
-The authored MuayThai assets currently cover `Click1`–`Click4`, `Block`, and `Uppercut`. Add these slots for dedicated presentation:
+Downcut and Ability1–4 have editable Studio preview clips inside the Animation slots in ReplicatedStorage.AnimationsIds.MuayThai, with R6 overrides in its R6 folder. Publish each clip under the experience owner and set its slot's AnimationId for use outside Studio. Source models: [Downslam](https://create.roblox.com/store/asset/16663903306), [R15 Punch](https://create.roblox.com/store/asset/2043684873), [Jumping knee strike](https://create.roblox.com/store/asset/451471588), [Fire spin kick](https://create.roblox.com/store/asset/2224821138), [Ground Slam](https://create.roblox.com/store/asset/93354440157608). The alternate-rig clips were adapted for this project.
 
-- `Downcut`
-- `DashFront`, `DashBack`, `DashLeft`, `DashRight`
-- `Ability1`–`Ability4`
-- `Ult`
-
-Until those assets are supplied, downcut/front-dash/ability attacks reuse the existing M1 animations. Other missing movement/ultimate animations leave the mechanics active without an animation.
+DashFront, DashBack, DashLeft, DashRight and Ult still have no dedicated clips. When a published animation is missing, downcut, front dash and ability attacks use their configured M1 fallback.
 
 For training dummies, provide a healthy humanoid rig named `CombatNpc` in ServerStorage. Dummies keep their spawn facing and perform their action in place. NPC hits grant half the usual ultimate charge. BasicStyle requires 200 charge. It never clones scripts into active dummies.
 

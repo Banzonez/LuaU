@@ -30,9 +30,10 @@ type combatView = {
 
 type pressState = {
 	button: TextButton,
-	scale: UIScale,
+	scale: UIScale?,
 	cracks: { Frame },
 	chips: { Frame },
+	fullSurface: boolean,
 	order: { number },
 	startedAt: number?,
 	input: InputObject?,
@@ -115,31 +116,12 @@ local function ready(screen: ScreenGui): boolean
 	for _, name in ipairs({ "Ultimate", "Ability1", "Ability2", "Ability3", "Ability4" }) do
 		local button = hud:FindFirstChild(name) :: Instance
 
-		if not hasChildren(button, { "PressScale", "Cracks", "Fragments" }) then
-			return false
-		end
-
-		local cracks = button:FindFirstChild("Cracks") :: Instance
-		local fragments = button:FindFirstChild("Fragments") :: Instance
-
 		if name == "Ultimate" then
 			if not button:FindFirstChild("Charge") then
 				return false
 			end
-		elseif not hasChildren(button, { "Input", "Name", "Cooldown", "Remaining" }) then
+		elseif not hasChildren(button, { "Name", "Cooldown", "Remaining" }) then
 			return false
-		end
-
-		for index = 1, CRACK_COUNT do
-			if not cracks:FindFirstChild("Crack" .. index) then
-				return false
-			end
-		end
-
-		for index = 1, CHIP_COUNT do
-			if not fragments:FindFirstChild("Chip" .. index) then
-				return false
-			end
 		end
 	end
 
@@ -198,7 +180,7 @@ function interface.endPress(key: string, cancelled: boolean?)
 	local strength = math.clamp((os.clock() - press.startedAt) / HOLD_DURATION, 0, 1)
 	press.startedAt = nil
 	press.input = nil
-	press.progress = 0
+	press.progress = -1
 	press.velocity = if cancelled then 0 else 2.2 + strength * 7
 
 	if not cancelled and available(key) and actions then
@@ -243,33 +225,10 @@ function interface.updateState(state: combatView)
 end
 
 local function bindPress(key: string, item: TextButton)
-	local scale = item:FindFirstChild("PressScale") :: UIScale
-	local crackContainer = item:FindFirstChild("Cracks") :: Frame
-	local fragmentContainer = item:FindFirstChild("Fragments") :: Frame
 	local cracks: { Frame } = {}
 	local chips: { Frame } = {}
 	local segments: { { from: Vector2, to: Vector2 } } = {}
 	local order: { number } = {}
-
-	for index = 1, CRACK_COUNT do
-		local crack = crackContainer:FindFirstChild("Crack" .. index) :: Frame
-		local from = crack:GetAttribute("CrackStart")
-		local to = crack:GetAttribute("CrackEnd")
-
-		if typeof(from) ~= "Vector2" or typeof(to) ~= "Vector2" then
-			local center = Vector2.new(crack.Position.X.Scale, crack.Position.Y.Scale)
-			local angle = math.rad(crack.Rotation)
-			local half = Vector2.new(math.cos(angle), math.sin(angle)) * crack.Size.X.Scale / 2
-			from = center - half
-			to = center + half
-			crack:SetAttribute("CrackStart", from)
-			crack:SetAttribute("CrackEnd", to)
-		end
-
-		table.insert(segments, { from = from :: Vector2, to = to :: Vector2 })
-		table.insert(cracks, crack)
-		order[index] = index
-	end
 
 	local function layoutCracks()
 		for index, segment in ipairs(segments) do
@@ -284,17 +243,12 @@ local function bindPress(key: string, item: TextButton)
 	end
 
 	connect(item:GetPropertyChangedSignal("AbsoluteSize"), layoutCracks)
-	layoutCracks()
-
-	for index = 1, CHIP_COUNT do
-		table.insert(chips, fragmentContainer:FindFirstChild("Chip" .. index) :: Frame)
-	end
-
 	presses[key] = {
 		button = item,
-		scale = scale,
+		scale = nil,
 		cracks = cracks,
 		chips = chips,
+		fullSurface = false,
 		order = order,
 		startedAt = nil,
 		input = nil,
@@ -302,6 +256,72 @@ local function bindPress(key: string, item: TextButton)
 		velocity = 0,
 		progress = 0,
 	}
+	local function refreshDecoration()
+		local press = presses[key]
+		if not press or press.button ~= item then
+			return
+		end
+
+		local scale = item:FindFirstChild("PressScale")
+		press.scale = if scale and scale:IsA("UIScale") then scale else nil
+		local crackContainer = item:FindFirstChild("Cracks")
+		local fragments = item:FindFirstChild("Fragments")
+		table.clear(cracks)
+		table.clear(segments)
+		table.clear(order)
+		table.clear(chips)
+
+		for index = 1, CRACK_COUNT do
+			local crack = crackContainer and crackContainer:FindFirstChild("Crack" .. index)
+			if not crack or not crack:IsA("Frame") then
+				continue
+			end
+			local from = crack:GetAttribute("CrackStart")
+			local to = crack:GetAttribute("CrackEnd")
+
+			if typeof(from) ~= "Vector2" or typeof(to) ~= "Vector2" then
+				local center = Vector2.new(crack.Position.X.Scale, crack.Position.Y.Scale)
+				local angle = math.rad(crack.Rotation)
+				local half = Vector2.new(math.cos(angle), math.sin(angle)) * crack.Size.X.Scale / 2
+				from = center - half
+				to = center + half
+				crack:SetAttribute("CrackStart", from)
+				crack:SetAttribute("CrackEnd", to)
+			end
+
+			table.insert(segments, { from = from :: Vector2, to = to :: Vector2 })
+			table.insert(cracks, crack)
+			order[#cracks] = #cracks
+		end
+
+		press.fullSurface = true
+		for index = 1, CHIP_COUNT do
+			local chip = fragments and fragments:FindFirstChild("Chip" .. index)
+			if chip and chip:IsA("Frame") then
+				chips[index] = chip
+			else
+				press.fullSurface = false
+			end
+		end
+
+		layoutCracks()
+		press.progress = -1
+	end
+
+	local queued = false
+	local function queueRefresh()
+		if not queued then
+			queued = true
+			task.defer(function()
+				queued = false
+				refreshDecoration()
+			end)
+		end
+	end
+
+	connect(item.DescendantAdded, queueRefresh)
+	connect(item.DescendantRemoving, queueRefresh)
+	refreshDecoration()
 	connect(item.InputBegan, function(input: InputObject)
 		if
 			input.UserInputType == Enum.UserInputType.MouseButton1
@@ -529,13 +549,19 @@ function interface.init(callbacks: callbacks)
 		local now = os.clock()
 
 		for key, press in pairs(presses) do
-			if press.startedAt or math.abs(press.value - 1) > 0.001 or math.abs(press.velocity) > 0.001 then
+			if
+				press.startedAt
+				or press.progress < 0
+				or math.abs(press.value - 1) > 0.001
+				or math.abs(press.velocity) > 0.001
+			then
+				local progress = 0
 				if press.startedAt then
 					if not available(key) then
 						interface.endPress(key, true)
 					else
-						press.progress = math.clamp((now - press.startedAt) / HOLD_DURATION, 0, 1)
-						press.value = 0.97 - press.progress * 0.13
+						progress = math.clamp((now - press.startedAt) / HOLD_DURATION, 0, 1)
+						press.value = 0.97 - progress * 0.13
 					end
 				else
 					local dt = math.min(delta, 1 / 30)
@@ -547,26 +573,33 @@ function interface.init(callbacks: callbacks)
 					end
 				end
 
-				press.scale.Scale = math.clamp(press.value, 0.8, 1.3)
-
-				for index, crack in ipairs(press.cracks) do
-					local threshold = (press.order[index] - 1) / CRACK_COUNT * 0.9
-					crack.Visible = press.startedAt ~= nil and press.progress > threshold
-					crack.BackgroundTransparency = 1 - math.clamp((press.progress - threshold) / 0.09, 0, 0.82)
+				if press.scale and (not press.startedAt or press.progress ~= progress) then
+					press.scale.Scale = math.clamp(press.value, 0.8, 1.3)
 				end
 
-				for index, chip in ipairs(press.chips) do
-					local detached = math.clamp((press.progress - index / CHIP_COUNT * 0.8) * 5, 0, 1)
-					chip.Visible = press.startedAt ~= nil
-					chip.Position = UDim2.fromScale(
-						((index - 1) % 4) / 4 + (if index % 2 == 0 then 1 else -1) * detached * 0.15,
-						math.floor((index - 1) / 4) / 3 + detached * 0.12
-					)
-					chip.Rotation = detached * (if index % 2 == 0 then 18 else -18)
-					chip.BackgroundTransparency = detached
-				end
+				if press.progress ~= progress then
+					press.progress = progress
+					for index, crack in ipairs(press.cracks) do
+						local threshold = (press.order[index] - 1) / #press.cracks * 0.9
+						crack.Visible = press.startedAt ~= nil and press.progress > threshold
+						crack.BackgroundTransparency = 1 - math.clamp((press.progress - threshold) / 0.09, 0, 0.82)
+					end
 
-				press.button.BackgroundTransparency = if press.startedAt then 1 elseif available(key) then 0.12 else 0.45
+					for index, chip in pairs(press.chips) do
+						local detached = math.clamp((press.progress - index / CHIP_COUNT * 0.8) * 5, 0, 1)
+						chip.Visible = press.startedAt ~= nil
+						chip.Position = UDim2.fromScale(
+							((index - 1) % 4) / 4 + (if index % 2 == 0 then 1 else -1) * detached * 0.15,
+							math.floor((index - 1) / 4) / 3 + detached * 0.12
+						)
+						chip.Rotation = detached * (if index % 2 == 0 then 18 else -18)
+						chip.BackgroundTransparency = detached
+					end
+					press.button.BackgroundTransparency = if press.startedAt and press.fullSurface
+						then 1
+						elseif available(key) then 0.12
+						else 0.45
+				end
 			end
 		end
 

@@ -31,6 +31,7 @@ local REQUEST_CAPACITY = 30
 local REQUEST_REFILL = 20
 
 local requests: { [Player]: { tokens: number, updatedAt: number } } = {}
+local waitingForFall: { [Model]: boolean } = {}
 local initialized = false
 local npcRequest: ((Player, string) -> ())? = nil
 local combatService = {}
@@ -93,6 +94,10 @@ local function sendState(character: Model)
 		abilities = abilities,
 		abilityCooldowns = table.clone(state.AbilitiesCooldowns),
 		nextClickTime = state.NextClickTime,
+		uppercutFrom = math.max(state.NextClickTime, state.LastUppercut + object.Settings.variantCooldown),
+		uppercutUntil = if state.ClickCombo == 1 and object.Settings.ClicksToFinishCombo >= 2
+			then state.ComboExpiresAt
+			else 0,
 		nextDashTime = state.nextDashTime,
 		ultCharge = state.ultCharge,
 		ultRequired = object.Settings.ultRequired,
@@ -118,8 +123,8 @@ local function onHit(character: Model, target: Model, damage: number)
 	end
 end
 
-function combatService.tryAttack(character: Model, uppercut: boolean?): boolean
-	if not alive(character) or not CombatStateHandler.validMovement(character) then
+function combatService.tryAttack(character: Model, uppercut: boolean?, fallingInput: boolean?): boolean
+	if waitingForFall[character] or not alive(character) or not CombatStateHandler.validMovement(character) then
 		return false
 	end
 
@@ -142,9 +147,38 @@ function combatService.tryAttack(character: Model, uppercut: boolean?): boolean
 	assert(root and humanoid)
 	local variantReady = combo == 2 and currentTime - state.LastUppercut >= object.Settings.variantCooldown
 
+	if
+		variantReady
+		and fallingInput
+		and (humanoid.FloorMaterial ~= Enum.Material.Air or root.AssemblyLinearVelocity.Y >= -3)
+	then
+		-- Input can reach the server before the character's jump replicates.
+		local revision = state.actionId
+		local deadline = currentTime + 0.5
+		waitingForFall[character] = true
+
+		repeat
+			task.wait()
+			currentTime = workspace:GetServerTimeNow()
+		until currentTime >= deadline
+			or state.actionId ~= revision
+			or not alive(character)
+			or (humanoid.FloorMaterial == Enum.Material.Air and root.AssemblyLinearVelocity.Y < -3)
+
+		waitingForFall[character] = nil
+		if
+			state.actionId ~= revision
+			or CombatStateHandler.peekCharacterState(character) ~= state
+			or not alive(character)
+			or not CombatStateHandler.validMovement(character)
+		then
+			return false
+		end
+	end
+
 	if variantReady and humanoid.FloorMaterial == Enum.Material.Air and root.AssemblyLinearVelocity.Y < -3 then
 		name = "Downcut"
-	elseif variantReady and uppercut then
+	elseif variantReady and uppercut and humanoid.FloorMaterial ~= Enum.Material.Air then
 		name = "Uppercut"
 	end
 
@@ -176,6 +210,14 @@ function combatService.tryAttack(character: Model, uppercut: boolean?): boolean
 	end
 
 	CombatStateHandler.setCharacterState(character, "Attacking", attack.recovery, object.Settings.attackWalkSpeed)
+	if name == "Uppercut" then
+		humanoid.Jump = false
+		local velocity = root.AssemblyLinearVelocity
+		if velocity.Y > 0 then
+			root.AssemblyLinearVelocity = Vector3.new(velocity.X, 0, velocity.Z)
+		end
+	end
+
 	CombatUtil.startAttack(character, object.Style.StyleName, attack, function(target, damage)
 		onHit(character, target, damage)
 	end)
@@ -426,9 +468,9 @@ function combatService.init()
 		elseif action == "Clicks" then
 			if
 				(value == Enum.UserInputType.MouseButton1 or value == Enum.UserInputType.Touch)
-				and (option == nil or type(option) == "boolean")
+				and (option == nil or type(option) == "boolean" or option == "Downcut")
 			then
-				combatService.tryAttack(character, option == true)
+				combatService.tryAttack(character, option == true, option == "Downcut")
 			end
 		elseif action == "Block" and type(value) == "boolean" then
 			combatService.setBlocking(character, value)

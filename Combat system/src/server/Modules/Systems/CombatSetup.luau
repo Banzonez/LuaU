@@ -147,6 +147,11 @@ local function validNumber(value: number, minimum: number, maximum: number, fiel
 end
 
 local function validateAttack(attack: Types.AttackSettings, name: string)
+	assert(
+		not (attack.waitForLanding and attack.useHitMarker),
+		name .. " cannot use both waitForLanding and useHitMarker"
+	)
+
 	validNumber(attack.damage, 0, 10000, name .. ".damage")
 	validNumber(attack.maxTargets, 1, 100, name .. ".maxTargets")
 	assert(attack.maxTargets % 1 == 0, "maxTargets must be an integer")

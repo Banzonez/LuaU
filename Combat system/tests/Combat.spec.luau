@@ -189,7 +189,15 @@ function tests.run()
 		assert(target.Health == 100)
 	end)
 	check("uppercut only on second hit and NPC charge", function()
-		local a, _, _, object, _, target = fixture()
+		local a, h, root, object, _, target = fixture()
+		local floor = Instance.new("Part")
+		floor.Anchored = true
+		floor.Size = Vector3.new(8, 1, 8)
+		floor.Position = root.Position - Vector3.new(0, h.HipHeight + root.Size.Y / 2 + 0.5, 0)
+		floor.Parent = folder
+		root.Anchored = false
+		task.wait(0.15)
+		assert(h.FloorMaterial ~= Enum.Material.Air)
 		assert(CombatService.tryAttack(a, true))
 		task.wait(0.6)
 		assert(object.State.ClickCombo == 1 and object.State.ultCharge == 3.5 and object.Settings.ultRequired == 200)
@@ -356,6 +364,17 @@ function tests.run()
 		local replacement = CombatSetup.createCharacterObj(a)
 		task.wait()
 		assert(CombatSetup.getCharacterObj(a) == replacement)
+	end)
+	check("conflicting hit timing names the attack", function()
+		local a = actor("InvalidTiming", origin)
+		local ok, message = pcall(function()
+			CombatSetup.createCharacterObj(
+				a,
+				nil,
+				{ Attacks = { Click1 = { useHitMarker = true, waitForLanding = true } } }
+			)
+		end)
+		assert(not ok and string.find(tostring(message), "Click1 cannot use both", 1, true))
 	end)
 	check("invalid combo configuration fails before combat starts", function()
 		local a = actor("InvalidSettings", origin)

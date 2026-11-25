@@ -32,7 +32,13 @@ local attackHeld = false
 local keyboardBlock = false
 local buttonBlock = false
 local nextRequest = 0
-local lastJumpRequest = -math.huge
+local uppercutFrom = 0
+local uppercutUntil = 0
+local nextClickTime = 0
+local pendingClick = 0
+local uppercutQueued = false
+local predictedLockUntil = 0
+local refreshJump: (() -> ())? = nil
 local heldSkills: { [Enum.KeyCode]: string } = {}
 local initialized = false
 local combat = {}
@@ -41,17 +47,68 @@ local function block(blocking: boolean)
 	combatEvent:FireServer("Block", blocking)
 end
 
-local function attack()
-	if not player.Character or UserInputService:GetFocusedTextBox() then
-		return
-	end
+local function sendClick(uppercut: boolean)
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local falling = humanoid
+		and humanoid.FloorMaterial == Enum.Material.Air
+		and root
+		and root:IsA("BasePart")
+		and root.AssemblyLinearVelocity.Y < -3
 
-	local uppercut = UserInputService:IsKeyDown(Enum.KeyCode.Space) or os.clock() - lastJumpRequest < 0.15
 	combatEvent:FireServer(
 		"Clicks",
 		if UserInputService.TouchEnabled then Enum.UserInputType.Touch else Enum.UserInputType.MouseButton1,
-		uppercut
+		if falling then "Downcut" else uppercut
 	)
+end
+
+local function canUppercut(now: number): boolean
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local state = character and character:GetAttribute("CombatState")
+
+	return humanoid ~= nil
+		and humanoid.Health > 0
+		and humanoid.FloorMaterial ~= Enum.Material.Air
+		and (state == "Idle" or state == "Attacking")
+		and math.max(now, nextClickTime) >= uppercutFrom
+		and now <= uppercutUntil
+end
+
+local function attack()
+	if not player.Character or UserInputService:GetFocusedTextBox() or pendingClick > 0 then
+		return
+	end
+
+	local now = workspace:GetServerTimeNow()
+	if canUppercut(now) and now >= nextClickTime then
+		pendingClick = now + 0.08
+	else
+		sendClick(false)
+	end
+end
+
+local function requestUppercut()
+	local now = workspace:GetServerTimeNow()
+	local character = player.Character
+	local recovering = character and character:GetAttribute("CombatState") == "Attacking" and now < nextClickTime
+
+	if
+		(not attackHeld and pendingClick == 0 and not recovering)
+		or not canUppercut(now)
+		or UserInputService:GetFocusedTextBox()
+	then
+		return
+	end
+
+	uppercutQueued = true
+	pendingClick = math.max(nextClickTime, now)
+	predictedLockUntil = pendingClick + 0.25
+	if refreshJump then
+		refreshJump()
+	end
 end
 
 local function dash()
@@ -88,7 +145,11 @@ local function clearCharacter()
 	characterRevision += 1
 	CombatInterface.reset()
 	table.clear(heldSkills)
-	lastJumpRequest = -math.huge
+	uppercutUntil = 0
+	pendingClick = 0
+	uppercutQueued = false
+	predictedLockUntil = 0
+	refreshJump = nil
 	attackHeld = false
 	keyboardBlock = false
 	buttonBlock = false
@@ -123,6 +184,7 @@ local function setupCharacter(character: Model)
 
 	local function updateJump()
 		local locked = character:GetAttribute("CombatJumpLocked") == true
+			or predictedLockUntil > workspace:GetServerTimeNow()
 		humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, not locked and jumpEnabled)
 
 		if locked then
@@ -139,6 +201,7 @@ local function setupCharacter(character: Model)
 			end
 		end)
 	)
+	refreshJump = updateJump
 	updateJump()
 	table.insert(
 		characterConnections,
@@ -157,6 +220,11 @@ function combat.init()
 	initialized = true
 	combatEvent.OnClientEvent:Connect(function(action: string, value)
 		if action == "State" and type(value) == "table" then
+			if value.character == player.Character then
+				uppercutFrom = value.uppercutFrom or 0
+				nextClickTime = value.nextClickTime
+				uppercutUntil = value.uppercutUntil or 0
+			end
 			CombatInterface.updateState(value)
 		end
 	end)
@@ -198,7 +266,9 @@ function combat.init()
 			return
 		end
 
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.KeyCode == Enum.KeyCode.ButtonR2 then
+		if input.KeyCode == Enum.KeyCode.Space or input.KeyCode == Enum.KeyCode.ButtonA then
+			requestUppercut()
+		elseif input.UserInputType == Enum.UserInputType.MouseButton1 or input.KeyCode == Enum.KeyCode.ButtonR2 then
 			attackHeld = true
 			nextRequest = os.clock() + 0.1
 			attack()
@@ -232,9 +302,7 @@ function combat.init()
 		end
 	end)
 
-	UserInputService.JumpRequest:Connect(function()
-		lastJumpRequest = os.clock()
-	end)
+	UserInputService.JumpRequest:Connect(requestUppercut)
 
 	local function cancelInput()
 		table.clear(heldSkills)
@@ -242,7 +310,12 @@ function combat.init()
 		attackHeld = false
 		keyboardBlock = false
 		buttonBlock = false
-		lastJumpRequest = -math.huge
+		pendingClick = 0
+		uppercutQueued = false
+		predictedLockUntil = 0
+		if refreshJump then
+			refreshJump()
+		end
 		block(false)
 	end
 
@@ -251,6 +324,25 @@ function combat.init()
 	UserInputService.GamepadDisconnected:Connect(cancelInput)
 	GuiService.MenuOpened:Connect(cancelInput)
 	RunService.Heartbeat:Connect(function()
+		local now = workspace:GetServerTimeNow()
+		if pendingClick > 0 and now >= pendingClick then
+			local uppercut = uppercutQueued and canUppercut(now)
+			pendingClick = 0
+			uppercutQueued = false
+			if uppercut then
+				uppercutUntil = 0
+			end
+
+			sendClick(uppercut)
+			nextRequest = os.clock() + 0.1
+		end
+		if predictedLockUntil > 0 and now >= predictedLockUntil then
+			predictedLockUntil = 0
+			if refreshJump then
+				refreshJump()
+			end
+		end
+
 		if attackHeld and os.clock() >= nextRequest then
 			nextRequest = os.clock() + 0.1
 			attack()

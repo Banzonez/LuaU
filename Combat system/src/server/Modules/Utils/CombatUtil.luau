@@ -122,7 +122,7 @@ local function stopMovement(character: Model)
 	end
 end
 
-function utils.getAnimation(styleName: string, animationName: string): Animation?
+function utils.getAnimation(styleName: string, animationName: string, rigType: Enum.HumanoidRigType?): Animation?
 	local folder = ReplicatedStorage:FindFirstChild("AnimationsIds")
 
 	if not folder then
@@ -131,22 +131,35 @@ function utils.getAnimation(styleName: string, animationName: string): Animation
 
 	local style = folder:FindFirstChild(styleName)
 	local basic = folder:FindFirstChild("MuayThai")
-	local animation = style and style:FindFirstChild(animationName)
+	local function findClip(parent: Instance?, name: string): Animation?
+		local slot = parent and parent:FindFirstChild(name)
+		if not slot or not slot:IsA("Animation") then
+			return nil
+		end
 
-	if animation and animation:IsA("Animation") and animation.AnimationId ~= "" then
-		return animation
+		if slot.AnimationId == "" and RunService:IsStudio() then
+			local clip = slot:FindFirstChildOfClass("KeyframeSequence")
+			if clip then
+				slot.AnimationId = game:GetService("KeyframeSequenceProvider"):RegisterKeyframeSequence(clip)
+			end
+		end
+
+		return if slot.AnimationId ~= "" then slot else nil
 	end
 
-	animation = basic and basic:FindFirstChild(animationName)
+	local function findInStyle(parent: Instance?, name: string): Animation?
+		local overrides = parent and rigType and parent:FindFirstChild(rigType.Name)
+		if overrides and overrides:FindFirstChild(name) then
+			return findClip(overrides, name)
+		end
 
-	if animation and animation:IsA("Animation") and animation.AnimationId ~= "" then
-		return animation
+		return findClip(parent, name)
 	end
 
+	local animation = findInStyle(style, animationName) or findInStyle(basic, animationName)
 	local fallback = animationFallbacks[animationName]
-	animation = if fallback and basic then basic:FindFirstChild(fallback) else nil
 
-	return if animation and animation:IsA("Animation") and animation.AnimationId ~= "" then animation else nil
+	return animation or (if fallback then findInStyle(basic, fallback) else nil)
 end
 
 local function getTrack(character: Model, animation: Animation): AnimationTrack?
@@ -218,7 +231,8 @@ function utils.playAnimation(
 	animationName: string,
 	looped: boolean?
 ): AnimationTrack?
-	local animation = utils.getAnimation(styleName, animationName)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local animation = utils.getAnimation(styleName, animationName, if humanoid then humanoid.RigType else nil)
 
 	if not animation then
 		return nil
