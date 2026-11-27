@@ -353,6 +353,7 @@ function combatService.tryAbility(character: Model, key: string): boolean
 
 	if state.ultExpiresAt > currentTime then
 		attack.damage *= object.Settings.ultDamageMultiplier
+		attack.guardBreak = attack.guardBreak or settings.ultGuardBreak == true
 		cooldown = object.Settings.UltSettings.AbilityCooldowns[key] or cooldown * object.Settings.ultCooldownMultiplier
 	end
 

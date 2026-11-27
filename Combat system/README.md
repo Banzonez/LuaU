@@ -30,11 +30,11 @@ Studio's `ServerStorage.MuayThaiAnimationStudy` contains the free [Muay thai ani
 
 Keep animations under `ReplicatedStorage.AnimationsIds.<StyleName>`. Missing style animations fall back to `MuayThai`. Attacks use `hitDelay` by default, independently of animation length. Set `useHitMarker = true` only for an asset authored with a `Hit` marker: its marker opens the window, and a missing marker cancels the hit before recovery ends. Marker mode fails closed; it never fires an earlier timing fallback. `waitForLanding` waits for nearby ground while descending, within the action lifetime.
 
-Downcut and Ability1–4 have editable Studio preview clips inside the Animation slots in ReplicatedStorage.AnimationsIds.MuayThai, with R6 overrides in its R6 folder. Publish each clip under the experience owner and set its slot's AnimationId for use outside Studio. Source models: [Downslam](https://create.roblox.com/store/asset/16663903306), [R15 Punch](https://create.roblox.com/store/asset/2043684873), [Jumping knee strike](https://create.roblox.com/store/asset/451471588), [Fire spin kick](https://create.roblox.com/store/asset/2224821138), [Ground Slam](https://create.roblox.com/store/asset/93354440157608). The alternate-rig clips were adapted for this project.
+Downcut and Ability1–4 have editable Studio preview clips inside the Animation slots in ReplicatedStorage.AnimationsIds.MuayThai, with R6 overrides in its R6 folder. Publish each clip under the experience owner and set its slot's AnimationId for use outside Studio. Source models: [Axe kick](https://create.roblox.com/store/asset/4813509054), [R15 Punch](https://create.roblox.com/store/asset/2043684873), [Jumping knee strike](https://create.roblox.com/store/asset/451471588), [Fire spin kick](https://create.roblox.com/store/asset/2224821138), [Ground Slam](https://create.roblox.com/store/asset/93354440157608). The alternate-rig clips were adapted for this project.
 
 DashFront, DashBack, DashLeft, DashRight and Ult still have no dedicated clips. When a published animation is missing, downcut, front dash and ability attacks use their configured M1 fallback.
 
-For training dummies, provide a healthy humanoid rig named `CombatNpc` in ServerStorage. Dummies keep their spawn facing and perform their action in place. NPC hits grant half the usual ultimate charge. BasicStyle requires 200 charge. It never clones scripts into active dummies.
+For training dummies, provide a healthy humanoid rig named `CombatNpc` in ServerStorage. Dummies keep their spawn facing. Attack dummies swing in place, pausing 0.7 seconds after recovery. The R15 block and basic attack clips are adapted from the MuayThai R6 animations; publish the R15 slots for live use. NPC hits grant half the usual ultimate charge. BasicStyle requires 200 charge. It never clones scripts into active dummies.
 
 ## Styles
 
@@ -51,6 +51,8 @@ For a player, obtain the object through `CombatSetup:GetPlayerObj(player)` and c
 ## Ownership and lifecycle
 
 The client sends action requests and displays server-confirmed cooldowns. Damage, targets, blocking, cooldowns, variants, ultimate charge, NPC limits, and dash speed are decided on the server.
+
+Guard starts at 15. Frontal blocks absorb the hit until guard reaches zero. The breaking hit deals full damage and stuns. After 2.5 seconds without a blocked hit or lost health, guard recovers at 2 points per second. Basic punches cost 1 guard and deal 5 health damage; combo finishers cost 2 and deal 8. The four abilities cost 2, 4, 3 and 6 guard respectively. During ultimate, abilities 2–4 break a full guard immediately. Rear hits bypass guard.
 
 Attacks follow the current root transform during their active window, with at most six intermediate poses between sampled frames. Each humanoid is counted once per attack. Static obstructions block hits; other combatants do not act as walls. State revisions prevent deferred callbacks from cancelling replacement actions.
 

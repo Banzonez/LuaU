@@ -399,7 +399,7 @@ local function applyHit(
 		local frontal = horizontal.Magnitude < 0.01
 			or look:Dot(horizontal.Unit) >= math.cos(math.rad(targetObj.Settings.blockAngle))
 		if frontal then
-			if not settings.guardBreak then
+			if not StateHandler.damageGuard(targetState, settings.guardDamage or 1, settings.guardBreak) then
 				return 0
 			end
 

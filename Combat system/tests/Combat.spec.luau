@@ -150,6 +150,61 @@ function tests.run()
 		task.wait(0.15)
 		assert(target.Health == 93 and StateHandler.getCharacterState(b).State == "Stunned")
 	end)
+	check("fourteenth punch holds and fifteenth breaks guard", function()
+		local a, _, _, object, b, target = fixture()
+		StateHandler.setCharacterState(b, "Blocking", nil, 6)
+		local guard = StateHandler.getCharacterState(b)
+
+		for hit = 1, 15 do
+			StateHandler.setCharacterState(a, "Idle")
+			object.State.ClickCombo = 0
+			object.State.NextClickTime = 0
+			assert(CombatService.tryAttack(a))
+			task.wait(0.12)
+			assert(guard.guard == 15 - hit)
+			assert(target.Health == (if hit == 15 then 93 else 100))
+		end
+
+		assert(guard.State == "Stunned")
+	end)
+	check("guard recovery restarts after health damage and caps at full", function()
+		local _, _, _, _, b, target = fixture()
+		local state = StateHandler.getCharacterState(b)
+		StateHandler.damageGuard(state, 5, false)
+		task.wait(1.2)
+		target:TakeDamage(1)
+		task.wait(1.6)
+		assert(state.guard == 10)
+		task.wait(1.4)
+		assert(math.abs(state.guard - 11) < 0.4)
+		task.wait(2.4)
+		assert(state.guard == 15)
+	end)
+	for _, ultimate in ipairs({ false, true }) do
+		for index = 1, 4 do
+			check("ability guard " .. index .. " ultimate " .. tostring(ultimate), function()
+				local a, _, _, object, b, target = fixture()
+				StateHandler.setCharacterState(b, "Blocking", nil, 6)
+				if ultimate then
+					object.State.ultExpiresAt = workspace:GetServerTimeNow() + 5
+				end
+				if index == 4 then
+					local ground = Instance.new("Part")
+					ground.Size = Vector3.new(30, 1, 30)
+					ground.Position = origin - Vector3.new(0, 2, 0)
+					ground.Anchored = true
+					ground.Parent = folder
+				end
+
+				assert(CombatService.tryAbility(a, tostring(index)))
+				task.wait(if index == 4 then 0.65 else 0.35)
+				local breaks = ultimate and index >= 2
+				local state = StateHandler.getCharacterState(b)
+				assert(state.guard == (if breaks then 0 else 15 - ({ 2, 4, 3, 6 })[index]))
+				assert((target.Health < 100) == breaks)
+			end)
+		end
+	end
 	check("wall occlusion", function()
 		local a, _, _, _, _, target = fixture()
 		local wall = Instance.new("Part")

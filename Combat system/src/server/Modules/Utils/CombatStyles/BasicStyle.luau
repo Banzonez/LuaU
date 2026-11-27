@@ -19,6 +19,7 @@ local function attackSettings(animation: string): Types.AttackSettings
 		recovery = 0.45,
 		knockback = Vector3.zero,
 		guardBreak = false,
+		guardDamage = 1,
 		animation = animation,
 	}
 end
@@ -32,13 +33,15 @@ function basicStyle.getSettings(): Types.StyleSettings
 
 	attacks.Click4.recovery = 0.8
 	attacks.Click4.stunTime = 0.8
-	attacks.Click4.guardBreak = true
+	attacks.Click4.damage = 8
+	attacks.Click4.guardDamage = 2
 	attacks.Click4.knockback = Vector3.new(0, 12, -35)
 
 	attacks.Uppercut = attackSettings("Uppercut")
 	attacks.Uppercut.recovery = 0.85
 	attacks.Uppercut.stunTime = 0.85
-	attacks.Uppercut.guardBreak = true
+	attacks.Uppercut.damage = 8
+	attacks.Uppercut.guardDamage = 2
 	attacks.Uppercut.knockback = Vector3.new(0, 55, -5)
 
 	attacks.Downcut = attackSettings("Downcut")
@@ -46,7 +49,8 @@ function basicStyle.getSettings(): Types.StyleSettings
 	attacks.Downcut.hitboxOffset = CFrame.new(0, -2, -2)
 	attacks.Downcut.recovery = 0.85
 	attacks.Downcut.stunTime = 0.9
-	attacks.Downcut.guardBreak = true
+	attacks.Downcut.damage = 8
+	attacks.Downcut.guardDamage = 2
 	attacks.Downcut.knockback = Vector3.new(0, -55, -8)
 
 	attacks.DashFront = attackSettings("DashFront")
@@ -93,6 +97,7 @@ function basicStyle.new(player: Player?, settings: Types.StyleSettingsOverrides?
 
 	for index, name in ipairs(names) do
 		local attack = attackSettings("Ability" .. index)
+		attack.guardDamage = ({ 2, 4, 3, 6 })[index]
 		attack.damage = ({ 11, 13, 15, 17 })[index]
 		attack.recovery = 0.8
 		attack.stunTime = 0.7
@@ -113,10 +118,12 @@ function basicStyle.new(player: Player?, settings: Types.StyleSettingsOverrides?
 
 	abilities["1"].settings.attack.hitboxSize = Vector3.new(4, 5, 8)
 	abilities["1"].settings.attack.hitboxOffset = CFrame.new(0, 0, -4)
+	abilities["2"].settings.ultGuardBreak = true
 	abilities["2"].settings.dashSpeed = 40
 	abilities["2"].settings.dashDuration = 0.3
 	abilities["2"].settings.attack.activeDuration = 0.25
 	abilities["2"].settings.attack.knockback = Vector3.new(0, 15, -25)
+	abilities["3"].settings.ultGuardBreak = true
 	abilities["3"].settings.targetMode = "area"
 	abilities["3"].settings.attack.hitboxSize = Vector3.new(10, 5, 10)
 	abilities["3"].settings.attack.hitboxOffset = CFrame.identity
@@ -132,7 +139,7 @@ function basicStyle.new(player: Player?, settings: Types.StyleSettingsOverrides?
 	abilities["4"].settings.attack.hitboxOffset = CFrame.new(0, -2, 0)
 	abilities["4"].settings.attack.maxTargets = 4
 	abilities["4"].settings.attack.maxAngle = 180
-	abilities["4"].settings.attack.guardBreak = true
+	abilities["4"].settings.ultGuardBreak = true
 	abilities["4"].settings.attack.knockback = Vector3.new(0, -25, -10)
 
 	return {

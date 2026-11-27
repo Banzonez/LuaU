@@ -65,6 +65,7 @@ local function mergeAttack(
 		hitDelay = override.hitDelay or defaults.hitDelay,
 		recovery = override.recovery or defaults.recovery,
 		knockback = override.knockback or defaults.knockback,
+		guardDamage = override.guardDamage or defaults.guardDamage,
 		guardBreak = if override.guardBreak == nil then defaults.guardBreak else override.guardBreak,
 		animation = override.animation or defaults.animation,
 	}
@@ -152,6 +153,7 @@ local function validateAttack(attack: Types.AttackSettings, name: string)
 		name .. " cannot use both waitForLanding and useHitMarker"
 	)
 
+	validNumber(attack.guardDamage or 1, 0, 10000, name .. ".guardDamage")
 	validNumber(attack.damage, 0, 10000, name .. ".damage")
 	validNumber(attack.maxTargets, 1, 100, name .. ".maxTargets")
 	assert(attack.maxTargets % 1 == 0, "maxTargets must be an integer")

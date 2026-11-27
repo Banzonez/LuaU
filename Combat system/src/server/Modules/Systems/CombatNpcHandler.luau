@@ -13,12 +13,20 @@ local MAX_PER_PLAYER = 3
 local MAX_TOTAL = 12
 local SPAWN_COOLDOWN = 1
 local THINK_INTERVAL = 0.2
+local ATTACK_PAUSE = 0.7
 
-type npcData = { owner: Player, mode: string, humanoid: Humanoid, root: BasePart, expiresAt: number }
+type npcData = {
+	owner: Player,
+	mode: string,
+	humanoid: Humanoid,
+	root: BasePart,
+	expiresAt: number,
+	nextAttackAt: number,
+}
 
 local npcs: { [Model]: npcData } = {}
 local lastSpawn: { [Player]: number } = {}
-local accumulator = 0
+local nextThinkAt = 0
 local initialized = false
 local npcHandler = {}
 
@@ -135,7 +143,14 @@ local function spawnNpc(player: Player, mode: string)
 		npcRoot:SetNetworkOwner(nil)
 	end
 
-	npcs[model] = { owner = player, mode = mode, humanoid = humanoid, root = npcRoot, expiresAt = currentTime + 180 }
+	npcs[model] = {
+		owner = player,
+		mode = mode,
+		humanoid = humanoid,
+		root = npcRoot,
+		expiresAt = currentTime + 180,
+		nextAttackAt = 0,
+	}
 	local object = CombatSetup.createCharacterObj(model)
 	local idle = CombatUtil.getAnimation(object.Style.StyleName, "Idle")
 
@@ -185,20 +200,36 @@ function npcHandler.init()
 		lastSpawn[player] = nil
 	end)
 
-	RunService.Heartbeat:Connect(function(delta: number)
-		accumulator += delta
+	RunService.Heartbeat:Connect(function()
+		local now = os.clock()
 
-		if accumulator < THINK_INTERVAL then
+		if now < nextThinkAt then
 			return
 		end
 
-		accumulator = 0
+		nextThinkAt = now + THINK_INTERVAL
 
 		for model, record in pairs(npcs) do
-			if not model.Parent or record.humanoid.Health <= 0 or os.clock() >= record.expiresAt then
+			if
+				not model.Parent
+				or record.humanoid.Health <= 0
+				or (record.mode ~= "Attack" and now >= record.expiresAt)
+			then
 				npcs[model] = nil
 				StateHandler.removeCharacter(model)
 				model:Destroy()
+				continue
+			end
+
+			if record.mode == "Attack" then
+				if now >= record.nextAttackAt and CombatService.tryAttack(model) then
+					record.nextAttackAt = StateHandler.getCharacterState(model).stateExpiresAt + ATTACK_PAUSE
+				end
+
+				if record.nextAttackAt > now then
+					nextThinkAt = math.min(nextThinkAt, record.nextAttackAt)
+				end
+
 				continue
 			end
 

@@ -13,6 +13,8 @@ export type PlayerCombatState = {
 	LastUppercut: number,
 	AbilitiesCooldowns: AbilityCooldowns,
 	nextDashTime: number,
+	guard: number,
+	guardRegenAt: number,
 	stateExpiresAt: number,
 	ultCharge: number,
 	ultExpiresAt: number,
@@ -32,6 +34,7 @@ export type AttackSettings = {
 	recovery: number,
 	knockback: Vector3,
 	guardBreak: boolean,
+	guardDamage: number?,
 	animation: string,
 }
 
@@ -49,6 +52,7 @@ export type AttackSettingsOverrides = {
 	recovery: number?,
 	knockback: Vector3?,
 	guardBreak: boolean?,
+	guardDamage: number?,
 	animation: string?,
 }
 
@@ -61,6 +65,7 @@ export type Ability = {
 		dashSpeed: number,
 		dashDuration: number,
 		launchSpeed: number,
+		ultGuardBreak: boolean?,
 		attack: AttackSettings,
 	},
 	execute: ((character: Model) -> ())?,

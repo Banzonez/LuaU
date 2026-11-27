@@ -6,6 +6,10 @@ local RunService = game:GetService("RunService")
 
 local Types = require(ReplicatedStorage.Shared.Types)
 
+local MAX_GUARD = 15
+local GUARD_REGEN_DELAY = 2.5
+local GUARD_REGEN_RATE = 2
+
 type movementData = {
 	walkSpeed: number,
 	jumpPower: number,
@@ -45,6 +49,8 @@ local function basicState(): Types.PlayerCombatState
 		LastUppercut = 0,
 		AbilitiesCooldowns = {},
 		nextDashTime = 0,
+		guard = MAX_GUARD,
+		guardRegenAt = 0,
 		stateExpiresAt = 0,
 		ultCharge = 0,
 		ultExpiresAt = 0,
@@ -156,6 +162,17 @@ function states.getCharacterState(character: Model): Types.PlayerCombatState
 	)
 
 	local function attachHumanoid(humanoid: Humanoid)
+		local previousHealth = humanoid.Health
+		table.insert(
+			characterConnections,
+			humanoid.HealthChanged:Connect(function(health)
+				if health < previousHealth then
+					state.guardRegenAt = os.clock() + GUARD_REGEN_DELAY
+				end
+				previousHealth = health
+			end)
+		)
+
 		if state.State ~= "Idle" then
 			updateMovement(character, state.State, pendingWalkSpeed[character])
 		end
@@ -190,6 +207,13 @@ function states.getCharacterState(character: Model): Types.PlayerCombatState
 	end
 
 	return state
+end
+
+function states.damageGuard(state: Types.PlayerCombatState, amount: number, guardBreak: boolean): boolean
+	state.guard = if guardBreak then 0 else math.max(0, state.guard - amount)
+	state.guardRegenAt = os.clock() + GUARD_REGEN_DELAY
+
+	return state.guard == 0
 end
 
 function states.peekCharacterState(character: Model): Types.PlayerCombatState?
@@ -395,6 +419,11 @@ function states.init()
 
 		for character, state in pairs(characterStates) do
 			states.validMovement(character)
+
+			if state.guard < MAX_GUARD and currentTime > state.guardRegenAt then
+				state.guard = math.min(MAX_GUARD, state.guard + (currentTime - state.guardRegenAt) * GUARD_REGEN_RATE)
+				state.guardRegenAt = currentTime
+			end
 
 			if state.State ~= "Idle" and state.stateExpiresAt > 0 and currentTime >= state.stateExpiresAt then
 				states.setCharacterState(character, "Idle")
